@@ -8,12 +8,12 @@
 // licenses.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use e2e_tests::{
 	assert_recovered_balance, close_channel, expected_onchain_balance, list_payments,
-	mine_and_sync, send_bolt11_payment, setup_funded_channel, wait_for_channels,
-	wait_for_force_close_claims, wait_for_forwarded_payments, wait_for_gossip,
+	mine_and_sync, send_bolt11_payment, setup_funded_channel, start_expect_failure,
+	wait_for_channels, wait_for_force_close_claims, wait_for_forwarded_payments, wait_for_gossip,
 	wait_for_settled_balance, wait_for_usable_channel, LdkServerHandle, TestBitcoind,
 	TestConfigBuilder,
 };
@@ -111,6 +111,7 @@ async fn start_postgres(bitcoind: &TestBitcoind, connection_string: &str) -> Ldk
 		let table_name = format!("node_{}", directory.replace('.', "_"));
 		TestConfigBuilder::new(params)
 			.postgres(connection_string, &table_name)
+			.allow_new_postgres_node()
 			.forwarded_payment_tracking_mode("detailed")
 			.log(Some("Info"), params.storage_dir.join("ldk-server.log").to_str().unwrap())
 			.build()
@@ -119,6 +120,39 @@ async fn start_postgres(bitcoind: &TestBitcoind, connection_string: &str) -> Ldk
 	assert!(server.storage_dir.join("regtest/ldk_node_postgres.lock").exists());
 	assert!(!server.storage_dir.join("regtest/ldk_node_data.sqlite").exists());
 	server
+}
+
+/// A start on a PostgreSQL table without node data refuses unless `allow_new_node` is set: the
+/// table can be an empty or wrong database for an existing node identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "requires PostgreSQL; set POSTGRES_CONNECTION_STRING"]
+async fn test_postgres_refuses_a_table_without_node_data() {
+	let connection_string = std::env::var("POSTGRES_CONNECTION_STRING")
+		.expect("Set POSTGRES_CONNECTION_STRING to a disposable PostgreSQL database");
+	let bitcoind = TestBitcoind::new();
+	let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+	let table_name = format!("new_node_{}_{nanos}", std::process::id());
+
+	// The second refusal shows that the first one stored no ChannelManager.
+	for _ in 0..2 {
+		let stderr = start_expect_failure(&bitcoind, |params| {
+			TestConfigBuilder::new(params).postgres(&connection_string, &table_name).build()
+		});
+		assert!(stderr.contains("holds no LDK Node data"), "{stderr}");
+	}
+
+	let mut without_flag = None;
+	let mut server = LdkServerHandle::start_with_config(&bitcoind, |params| {
+		let builder = TestConfigBuilder::new(params).postgres(&connection_string, &table_name);
+		without_flag = Some(builder.build());
+		builder.allow_new_postgres_node().build()
+	})
+	.await;
+	// A new block and the graceful stop make LDK persist its ChannelManager.
+	mine_and_sync(&bitcoind, &[&server], 1).await;
+	server.stop().await;
+	std::fs::write(&server.config_path, without_flag.unwrap()).unwrap();
+	server.start_again().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

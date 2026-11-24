@@ -25,9 +25,14 @@ use hyper::server::conn::http2;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use ldk_node::bitcoin::Network;
 use ldk_node::config::{Config, ElectrumSyncConfig, EsploraSyncConfig};
+use ldk_node::io::postgres_store::PostgresStore;
 use ldk_node::lightning::events::{ClosureReason, PaymentFailureReason};
 use ldk_node::lightning::ln::channelmanager::PaymentId;
 use ldk_node::lightning::ln::types::ChannelId;
+use ldk_node::lightning::util::persist::{
+	KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+	CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+};
 use ldk_node::lightning::util::ser::Writeable;
 use ldk_node::{Builder, CustomTlvRecord, Event, Node};
 use ldk_server_grpc::events;
@@ -295,6 +300,31 @@ fn main() {
 	let uses_postgres =
 		matches!(config_file.ldk_node_storage, LdkNodeStorageConfig::Postgres { .. });
 	let build_deadline = Instant::now() + KV_STORE_IN_USE_RETRY_TIMEOUT;
+	if let LdkNodeStorageConfig::Postgres { allow_new_node, .. } = &config_file.ldk_node_storage {
+		let has_node_data = loop {
+			match postgres_has_node_data(&runtime, &config_file.ldk_node_storage) {
+				Ok(found) => break found,
+				Err(e)
+					if e.kind() == std::io::ErrorKind::AlreadyExists
+						&& Instant::now() < build_deadline =>
+				{
+					warn!(
+						"LDK Node storage is in use by another node, retrying in {}s.",
+						KV_STORE_IN_USE_RETRY_INTERVAL.as_secs()
+					);
+					std::thread::sleep(KV_STORE_IN_USE_RETRY_INTERVAL);
+				},
+				Err(e) => {
+					error!("Failed to read LDK Node data from PostgreSQL: {e}");
+					std::process::exit(-1);
+				},
+			}
+		};
+		if let Err(e) = check_new_node_allowed(has_node_data, *allow_new_node) {
+			error!("{e}");
+			std::process::exit(-1);
+		}
+	}
 	let node = loop {
 		match build_node(&builder, node_entropy, &config_file.ldk_node_storage) {
 			Ok(node) => break node,
@@ -813,6 +843,75 @@ fn ensure_no_unsupported_storage_migration(
 	Ok(())
 }
 
+/// Whether the PostgreSQL store holds a node: LDK persists its ChannelManager under the key
+/// `manager`. The node build writes wallet data before it reads that key, so the check runs on a
+/// separate store before the build.
+fn postgres_has_node_data(
+	runtime: &tokio::runtime::Runtime, ldk_node_storage: &LdkNodeStorageConfig,
+) -> std::io::Result<bool> {
+	let LdkNodeStorageConfig::Postgres {
+		connection_string,
+		db_name,
+		kv_table_name,
+		certificate_pem,
+		..
+	} = ldk_node_storage
+	else {
+		unreachable!("only PostgreSQL storage is checked");
+	};
+	let (store, found) = runtime.block_on(async {
+		let store = PostgresStore::new(
+			connection_string.clone(),
+			db_name.clone(),
+			kv_table_name.clone(),
+			certificate_pem.clone(),
+		)
+		.await?;
+		let found = match KVStore::read(
+			&store,
+			CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_KEY,
+		)
+		.await
+		{
+			Ok(_) => Ok(true),
+			Err(e) if e.kind() == ldk_node::lightning::io::ErrorKind::NotFound => Ok(false),
+			Err(e) => Err(std::io::Error::from(e)),
+		};
+		Ok::<_, std::io::Error>((store, found))
+	})?;
+	// Drop the store outside the runtime: the drop releases its lease before the node build
+	// takes the lease again.
+	drop(store);
+	found
+}
+
+/// A start without LDK Node data in PostgreSQL creates a new node with the keys of this server.
+/// That is right only for the first start of a new node. Otherwise the database can be empty or
+/// wrong, for example after a configuration error or a restore.
+fn check_new_node_allowed(has_node_data: bool, allow_new_node: bool) -> Result<(), String> {
+	match (has_node_data, allow_new_node) {
+		(true, false) => Ok(()),
+		(true, true) => {
+			warn!(
+				"allow_new_node is set, but the PostgreSQL database holds LDK Node data. Remove \
+				 allow_new_node from [storage.postgres] after the first start."
+			);
+			Ok(())
+		},
+		(false, true) => {
+			info!("The PostgreSQL database holds no LDK Node data; allow_new_node creates a node.");
+			Ok(())
+		},
+		(false, false) => Err("Refusing to start: the PostgreSQL database holds no LDK Node data \
+			(no ChannelManager under the key `manager`). A start would create a new node with the \
+			keys of this server. Check connection_string, db_name and kv_table_name. Set \
+			allow_new_node = true in [storage.postgres] only for the first start of a new node."
+			.to_string()),
+	}
+}
+
 fn persist_postgres_storage_lock(network_dir: &Path) -> Result<(), String> {
 	let lock_path = network_dir.join(LDK_NODE_POSTGRES_LOCK_FILE);
 	match write_new(&lock_path, &[], 0o600) {
@@ -835,6 +934,7 @@ fn build_node(
 			db_name,
 			kv_table_name,
 			certificate_pem,
+			..
 		} => builder.build_with_postgres_store(
 			node_entropy,
 			connection_string.clone(),
@@ -1086,6 +1186,7 @@ mod tests {
 			db_name: None,
 			kv_table_name: None,
 			certificate_pem: None,
+			allow_new_node: false,
 		};
 
 		let err = ensure_no_unsupported_storage_migration(&network_dir, &postgres).unwrap_err();
@@ -1103,6 +1204,7 @@ mod tests {
 			db_name: None,
 			kv_table_name: None,
 			certificate_pem: None,
+			allow_new_node: false,
 		};
 
 		assert!(ensure_no_unsupported_storage_migration(&network_dir, &postgres).is_ok());
@@ -1134,6 +1236,15 @@ mod tests {
 
 		assert!(err.contains("Refusing to switch LDK Node storage from PostgreSQL to SQLite"));
 		fs::remove_dir_all(network_dir).unwrap();
+	}
+
+	#[test]
+	fn a_database_without_node_data_needs_allow_new_node() {
+		let err = check_new_node_allowed(false, false).unwrap_err();
+		assert!(err.contains("holds no LDK Node data"), "{err}");
+		assert!(check_new_node_allowed(false, true).is_ok());
+		assert!(check_new_node_allowed(true, false).is_ok());
+		assert!(check_new_node_allowed(true, true).is_ok());
 	}
 
 	#[test]

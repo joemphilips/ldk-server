@@ -211,6 +211,7 @@ pub struct TestConfigBuilder {
 	alias: Option<String>,
 	storage_dir: PathBuf,
 	postgres: Option<(String, String)>,
+	allow_new_postgres_node: bool,
 	chain_source: ChainSource,
 	metrics_auth: Option<(String, String)>,
 	log: Option<(Option<String>, String)>,
@@ -230,6 +231,7 @@ impl TestConfigBuilder {
 			alias: Some("e2e-test-node".to_string()),
 			storage_dir: params.storage_dir.clone(),
 			postgres: None,
+			allow_new_postgres_node: false,
 			chain_source: ChainSource::Bitcoind {
 				rpc_address: params.rpc_address.clone(),
 				rpc_user: params.rpc_user.clone(),
@@ -250,6 +252,12 @@ impl TestConfigBuilder {
 	}
 
 	/// Store LDK Node state in PostgreSQL, keeping keys and server files on disk.
+	/// Let the first start of a node create it on a PostgreSQL table without node data.
+	pub fn allow_new_postgres_node(mut self) -> Self {
+		self.allow_new_postgres_node = true;
+		self
+	}
+
 	pub fn postgres(mut self, connection_string: &str, kv_table_name: &str) -> Self {
 		self.postgres = Some((connection_string.to_string(), kv_table_name.to_string()));
 		self
@@ -379,6 +387,9 @@ poll_metrics_interval = 1{metrics_auth}
 				"\n[storage.postgres]\nconnection_string = \"{}\"\nkv_table_name = \"{}\"\n",
 				connection_string, kv_table_name,
 			));
+			if self.allow_new_postgres_node {
+				config.push_str("allow_new_node = true\n");
+			}
 		}
 
 		if let Some((level, file)) = &self.log {
@@ -478,6 +489,28 @@ impl LdkServerHandle {
 	pub async fn restart(&mut self) {
 		self.child.0.kill().expect("Failed to kill ldk-server");
 		self.child.0.wait().expect("Failed to reap ldk-server");
+		self.start_again().await;
+	}
+
+	/// Stop the server with SIGTERM, as a service manager does, and wait for its exit.
+	pub async fn stop(&mut self) {
+		let pid = self.child.0.id().to_string();
+		let status =
+			Command::new("kill").args(["-TERM", &pid]).status().expect("Failed to run kill");
+		assert!(status.success(), "kill -TERM {pid} failed");
+		let start = Instant::now();
+		loop {
+			if let Some(status) = self.child.0.try_wait().expect("Failed to check ldk-server") {
+				assert!(status.success(), "ldk-server exited with {status} after SIGTERM");
+				return;
+			}
+			assert!(start.elapsed() < Duration::from_secs(30), "ldk-server ignored SIGTERM");
+			tokio::time::sleep(Duration::from_millis(100)).await;
+		}
+	}
+
+	/// Start a stopped server again with its config file and storage.
+	pub async fn start_again(&mut self) {
 		self.child = ServerProcess(spawn_server_process(&self.config_path));
 		forward_server_output(&mut self.child.0);
 		let info = wait_for_server_ready(self, Duration::from_secs(60)).await;

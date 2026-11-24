@@ -112,6 +112,9 @@ pub enum LdkNodeStorageConfig {
 		db_name: Option<String>,
 		kv_table_name: Option<String>,
 		certificate_pem: Option<String>,
+		/// Lets a start create a node in a database without LDK Node data. Only the first start
+		/// of a new node needs it.
+		allow_new_node: bool,
 	},
 }
 
@@ -623,6 +626,7 @@ impl ConfigBuilder {
 							})
 					})
 					.transpose()?,
+				allow_new_node: postgres.allow_new_node.unwrap_or(false),
 			}
 		} else {
 			LdkNodeStorageConfig::Sqlite
@@ -823,6 +827,7 @@ struct PostgresStorageConfig {
 	db_name: Option<String>,
 	kv_table_name: Option<String>,
 	certificate_path: Option<String>,
+	allow_new_node: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -2078,6 +2083,7 @@ mod tests {
 			db_name = "ldk_node"
 			kv_table_name = "ldk_node_kv"
 			certificate_path = "{}"
+			allow_new_node = true
 
 			[bitcoind]
 			rpc_address = "127.0.0.1:8332"
@@ -2106,6 +2112,7 @@ mod tests {
 				certificate_pem: Some(
 					"-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----".to_string()
 				),
+				allow_new_node: true,
 			}
 		);
 	}
@@ -2153,6 +2160,7 @@ mod tests {
 				certificate_pem: Some(
 					"-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----".to_string()
 				),
+				allow_new_node: false,
 			}
 		);
 	}
@@ -2235,6 +2243,7 @@ mod tests {
 					db_name: include_db_name.then(|| "ldk_node".to_string()),
 					kv_table_name: include_kv_table_name.then(|| "ldk_node_kv".to_string()),
 					certificate_pem: include_certificate_path.then(|| cert_pem.to_string()),
+					allow_new_node: false,
 				}
 			);
 		}

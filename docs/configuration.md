@@ -167,6 +167,13 @@ supports TLS, and `sslmode=require` fails to connect. System trust alone does no
 When `certificate_path` is set, TLS is required, including with the default `sslmode=prefer`.
 Combining it with `sslmode=disable` is rejected.
 
+A start refuses a PostgreSQL database that holds no LDK Node data (no ChannelManager under the
+key `manager`), because the start would create a new node with the keys of this server. An empty
+or wrong database can be the result of a configuration error or a restore. For the first start
+of a new node, set `allow_new_node = true` in `[storage.postgres]`, and remove it after that
+start. When the database holds node data, the setting has no effect and ldk-server logs a
+warning.
+
 Storage migration is not supported. ldk-server refuses to start with PostgreSQL when an existing
 `ldk_node_data.sqlite` file is present. After the first successful PostgreSQL node build,
 ldk-server creates `<network_dir>/ldk_node_postgres.lock` and refuses to start with SQLite while
