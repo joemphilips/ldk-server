@@ -20,6 +20,25 @@ mod tests {
 
 	use super::*;
 	use crate::macaroons::MacaroonInfo;
+
+	/// The permissions of the macaroon of a CDK payment processor, the credential that a mint
+	/// uses. The README of the processor names the same five.
+	const PROCESSOR_PERMISSIONS: [&str; 5] =
+		["node:read", "invoices:create", "payments:read", "payments:send", "events:read"];
+
+	fn declared_methods() -> BTreeSet<&'static str> {
+		include_str!("../../../ldk-server-grpc/src/proto/api.proto")
+			.lines()
+			.filter_map(|line| {
+				let mut words = line.split_whitespace();
+				if words.next() != Some("rpc") {
+					return None;
+				}
+				Some(words.next().expect("RPC name").split('(').next().unwrap())
+			})
+			.collect()
+	}
+
 	#[test]
 	fn every_rpc_has_the_expected_authorization() {
 		// Keep this contract independent of the production mapping. The schema comparison
@@ -39,18 +58,18 @@ mod tests {
 			("Bolt11ReceiveViaJitChannelForHash", Some("invoices:create")),
 			("Bolt11ReceiveVariableAmountViaJitChannelForHash", Some("invoices:create")),
 			("Bolt11Send", Some("payments:send")),
-			("Bolt11SendProbes", Some("payments:send")),
-			("Bolt11SendUnderpaying", Some("payments:send")),
+			("Bolt11SendProbes", Some("payments:send_advanced")),
+			("Bolt11SendUnderpaying", Some("payments:send_advanced")),
 			("Bolt12Receive", Some("invoices:create")),
 			("Bolt12Send", Some("payments:send")),
-			("Bolt12SendRefund", Some("payments:send")),
+			("Bolt12SendRefund", Some("payments:send_advanced")),
 			("Bolt12ReceiveRefund", Some("invoices:create")),
 			("Bolt12CreatePayerProof", Some("messages:sign")),
-			("SpontaneousSend", Some("payments:send")),
-			("SpontaneousSendProbes", Some("payments:send")),
+			("SpontaneousSend", Some("payments:send_advanced")),
+			("SpontaneousSendProbes", Some("payments:send_advanced")),
 			("OpenChannel", Some("channels:manage")),
 			("SpliceIn", Some("channels:manage")),
-			("SpliceOut", Some("payments:send")),
+			("SpliceOut", Some("channels:manage")),
 			("BumpChannelFundingFee", Some("channels:manage")),
 			("UpdateChannelConfig", Some("channels:manage")),
 			("CloseChannel", Some("channels:manage")),
@@ -70,7 +89,7 @@ mod tests {
 			("SignMessage", Some("messages:sign")),
 			("VerifySignature", Some("messages:verify")),
 			("ExportPathfindingScores", Some("node:read")),
-			("UnifiedSend", Some("payments:send")),
+			("UnifiedSend", Some("onchain:send")),
 			("DecodeInvoice", Some("utilities:read")),
 			("DecodeOffer", Some("utilities:read")),
 			("GraphListChannels", Some("graph:read")),
@@ -83,17 +102,7 @@ mod tests {
 			("RevokeMacaroon", Some("macaroons:manage")),
 			("GetPermissions", None),
 		];
-		let declared_methods: BTreeSet<_> =
-			include_str!("../../../ldk-server-grpc/src/proto/api.proto")
-				.lines()
-				.filter_map(|line| {
-					let mut words = line.split_whitespace();
-					if words.next() != Some("rpc") {
-						return None;
-					}
-					Some(words.next().expect("RPC name").split('(').next().unwrap())
-				})
-				.collect();
+		let declared_methods = declared_methods();
 		let tested_methods: BTreeSet<_> = expected.iter().map(|(method, _)| *method).collect();
 		assert_eq!(tested_methods.len(), expected.len(), "Duplicate RPC in permission table");
 		assert_eq!(declared_methods, tested_methods, "Update the RPC permission test table");
@@ -127,6 +136,53 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn processor_macaroon_permits_only_decided_methods() {
+		// A processor credential must not send on-chain funds or channel funds to an address, and
+		// must pay only BOLT11 invoices and BOLT12 offers. A method that gets one of these
+		// permissions fails this test until someone decides that a processor may call it.
+		let decided = BTreeSet::from([
+			// The processor calls these methods.
+			"GetNodeInfo",
+			"Bolt11Receive",
+			"Bolt12Receive",
+			"Bolt11Send",
+			"Bolt12Send",
+			"GetPaymentDetails",
+			"ListPayments",
+			"SubscribeEvents",
+			// The processor does not call these methods. They share a permission with a method
+			// above, and they send no funds.
+			"GetBalances",
+			"ExportPathfindingScores",
+			"Bolt11ReceiveForHash",
+			"Bolt11ReceiveViaJitChannel",
+			"Bolt11ReceiveVariableAmountViaJitChannel",
+			"Bolt11ReceiveViaJitChannelForHash",
+			"Bolt11ReceiveVariableAmountViaJitChannelForHash",
+			"Bolt12ReceiveRefund",
+			"ListForwardedPayments",
+			"GetForwardedPaymentDetails",
+			"GetForwardedPaymentTrackingMode",
+			"GetChannelForwardingStats",
+			"ListChannelForwardingStats",
+			"ListChannelPairForwardingStats",
+			// Every authenticated caller may use this method.
+			"GetPermissions",
+		]);
+		let permitted: BTreeSet<_> = declared_methods()
+			.into_iter()
+			.filter(|method| match method_authorization(method) {
+				MethodAuthorization::Permission(required) => {
+					PROCESSOR_PERMISSIONS.contains(&required)
+				},
+				MethodAuthorization::AuthenticatedOnly => true,
+				MethodAuthorization::Unknown => false,
+			})
+			.collect();
+		assert_eq!(permitted, decided);
 	}
 
 	#[test]

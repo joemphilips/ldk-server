@@ -837,7 +837,7 @@ enum Commands {
 			num_args = 1..,
 			conflicts_with = "preset",
 			required_unless_present = "preset",
-			help = "Permissions to grant, such as node:read or invoices:create"
+			help = "Permissions to grant, such as node:read or invoices:create. payments:send permits bolt11-send and bolt12-send only. The other Lightning sends and the probes need payments:send_advanced, pay needs onchain:send, and splice-out needs channels:manage"
 		)]
 		permissions: Vec<String>,
 		#[arg(

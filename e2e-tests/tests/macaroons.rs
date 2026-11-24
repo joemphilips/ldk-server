@@ -128,8 +128,8 @@ async fn test_macaroon_splice_permissions() {
 	let server = LdkServerHandle::start(&bitcoind).await;
 	// Invalid request fields distinguish reaching the splice handler from an auth rejection.
 	for (name, permission, splice_in_error, splice_out_error) in [
-		("manager", "channels:manage", InvalidRequestError, AuthorizationError),
-		("sender", "payments:send", AuthorizationError, InvalidRequestError),
+		("manager", "channels:manage", InvalidRequestError, InvalidRequestError),
+		("sender", "payments:send", AuthorizationError, AuthorizationError),
 		("reader", "channels:read", AuthorizationError, AuthorizationError),
 		("full-admin", "admin", InvalidRequestError, InvalidRequestError),
 	] {
@@ -152,6 +152,47 @@ async fn test_macaroon_splice_permissions() {
 				.error_code,
 			splice_in_error
 		);
+	}
+}
+
+/// The macaroon of a CDK payment processor pays BOLT11 invoices and BOLT12 offers only.
+#[tokio::test]
+async fn test_macaroon_processor_sends() {
+	let bitcoind = TestBitcoind::new();
+	let server = LdkServerHandle::start(&bitcoind).await;
+	let created = run_cli(
+		&server,
+		&[
+			"create-macaroon",
+			"processor",
+			"--permissions",
+			"node:read",
+			"invoices:create",
+			"payments:read",
+			"payments:send",
+			"events:read",
+		],
+	);
+	let processor = client_with_macaroon(&server, created["token"].as_str().unwrap().to_string());
+	macro_rules! error_of {
+		($method:ident) => {
+			processor.$method(Default::default()).await.unwrap_err().error_code
+		};
+	}
+	// Invalid request fields distinguish reaching the handler from an auth rejection.
+	assert_eq!(error_of!(bolt11_send), InvalidRequestError);
+	assert_eq!(error_of!(bolt12_send), InvalidRequestError);
+	for (method, error) in [
+		("UnifiedSend", error_of!(unified_send)),
+		("SpliceOut", error_of!(splice_out)),
+		("OnchainSend", error_of!(onchain_send)),
+		("Bolt11SendProbes", error_of!(bolt11_send_probes)),
+		("Bolt11SendUnderpaying", error_of!(bolt11_send_underpaying)),
+		("Bolt12SendRefund", error_of!(bolt12_send_refund)),
+		("SpontaneousSend", error_of!(spontaneous_send)),
+		("SpontaneousSendProbes", error_of!(spontaneous_send_probes)),
+	] {
+		assert_eq!(error, AuthorizationError, "{method}");
 	}
 }
 

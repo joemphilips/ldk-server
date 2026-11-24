@@ -35,7 +35,13 @@ pub const ONCHAIN_SEND_PERMISSION: &str = "onchain:send";
 pub const INVOICES_CREATE_PERMISSION: &str = "invoices:create";
 pub const PAYMENTS_READ_PERMISSION: &str = "payments:read";
 pub const PAYMENTS_CLAIM_PERMISSION: &str = "payments:claim";
+/// Pays a BOLT11 invoice or a BOLT12 offer, and nothing else. The macaroon of a CDK payment
+/// processor has it, so it must never permit a call that can send on-chain funds or channel
+/// funds to an address.
 pub const PAYMENTS_SEND_PERMISSION: &str = "payments:send";
+/// Sends that [`PAYMENTS_SEND_PERMISSION`] does not permit: probes, underpaying BOLT11 payments,
+/// BOLT12 refunds and spontaneous payments.
+pub const PAYMENTS_SEND_ADVANCED_PERMISSION: &str = "payments:send_advanced";
 pub const CHANNELS_READ_PERMISSION: &str = "channels:read";
 pub const CHANNELS_MANAGE_PERMISSION: &str = "channels:manage";
 pub const CHANNELS_FORCE_CLOSE_PERMISSION: &str = "channels:force_close";
@@ -49,7 +55,7 @@ pub const EVENTS_READ_PERMISSION: &str = "events:read";
 pub const MACAROONS_MANAGE_PERMISSION: &str = "macaroons:manage";
 
 /// All permissions accepted when a macaroon is created.
-pub const ALL_PERMISSIONS: [&str; 19] = [
+pub const ALL_PERMISSIONS: [&str; 20] = [
 	ADMIN_PERMISSION,
 	NODE_READ_PERMISSION,
 	ONCHAIN_RECEIVE_PERMISSION,
@@ -58,6 +64,7 @@ pub const ALL_PERMISSIONS: [&str; 19] = [
 	PAYMENTS_READ_PERMISSION,
 	PAYMENTS_CLAIM_PERMISSION,
 	PAYMENTS_SEND_PERMISSION,
+	PAYMENTS_SEND_ADVANCED_PERMISSION,
 	CHANNELS_READ_PERMISSION,
 	CHANNELS_MANAGE_PERMISSION,
 	CHANNELS_FORCE_CLOSE_PERMISSION,
@@ -160,7 +167,8 @@ pub fn method_authorization(method: &str) -> MethodAuthorization {
 			MethodAuthorization::Permission(NODE_READ_PERMISSION)
 		},
 		ONCHAIN_RECEIVE_PATH => MethodAuthorization::Permission(ONCHAIN_RECEIVE_PERMISSION),
-		ONCHAIN_SEND_PATH | ONCHAIN_BUMP_FEE_PATH => {
+		// UnifiedSend can pay the on-chain address of a BIP 21 URI.
+		ONCHAIN_SEND_PATH | ONCHAIN_BUMP_FEE_PATH | UNIFIED_SEND_PATH => {
 			MethodAuthorization::Permission(ONCHAIN_SEND_PERMISSION)
 		},
 		BOLT11_RECEIVE_PATH
@@ -174,15 +182,16 @@ pub fn method_authorization(method: &str) -> MethodAuthorization {
 		BOLT11_CLAIM_FOR_ID_PATH | BOLT11_FAIL_FOR_ID_PATH => {
 			MethodAuthorization::Permission(PAYMENTS_CLAIM_PERMISSION)
 		},
-		BOLT11_SEND_PATH
-		| BOLT11_SEND_PROBES_PATH
+		BOLT11_SEND_PATH | BOLT12_SEND_PATH => {
+			MethodAuthorization::Permission(PAYMENTS_SEND_PERMISSION)
+		},
+		BOLT11_SEND_PROBES_PATH
 		| BOLT11_SEND_UNDERPAYING_PATH
-		| BOLT12_SEND_PATH
 		| BOLT12_SEND_REFUND_PATH
 		| SPONTANEOUS_SEND_PATH
-		| SPONTANEOUS_SEND_PROBES_PATH
-		| UNIFIED_SEND_PATH
-		| SPLICE_OUT_PATH => MethodAuthorization::Permission(PAYMENTS_SEND_PERMISSION),
+		| SPONTANEOUS_SEND_PROBES_PATH => {
+			MethodAuthorization::Permission(PAYMENTS_SEND_ADVANCED_PERMISSION)
+		},
 		GET_PAYMENT_DETAILS_PATH
 		| LIST_PAYMENTS_PATH
 		| LIST_FORWARDED_PAYMENTS_PATH
@@ -198,6 +207,7 @@ pub fn method_authorization(method: &str) -> MethodAuthorization {
 		| UPDATE_CHANNEL_CONFIG_PATH
 		| CLOSE_CHANNEL_PATH
 		| SPLICE_IN_PATH
+		| SPLICE_OUT_PATH
 		| BUMP_CHANNEL_FUNDING_FEE_PATH => MethodAuthorization::Permission(CHANNELS_MANAGE_PERMISSION),
 		FORCE_CLOSE_CHANNEL_PATH => {
 			MethodAuthorization::Permission(CHANNELS_FORCE_CLOSE_PERMISSION)

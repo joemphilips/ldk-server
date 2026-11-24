@@ -90,6 +90,8 @@ See [Macaroon Management](#macaroon-management) for the RPCs and
 ### Macaroon Permissions
 
 Choose the permissions each client needs, or use `admin` by itself for full access.
+A client that only pays invoices and offers, such as a mint payment processor, needs
+`payments:send`. That permission cannot send on-chain funds or channel funds to an address.
 The CLI also has `readonly`, `invoice`, and `admin` presets.
 RPCs with no permission mapping return `UNIMPLEMENTED`, even for admin tokens.
 
@@ -97,13 +99,14 @@ RPCs with no permission mapping return `UNIMPLEMENTED`, even for admin tokens.
 | ---------- | ------ |
 | `node:read` | Node information, balances, and pathfinding scores |
 | `onchain:receive` | Create on-chain receive addresses |
-| `onchain:send` | Send on-chain funds or bump an on-chain payment fee |
+| `onchain:send` | Send on-chain funds, bump an on-chain payment fee, or pay with `UnifiedSend`, which can pay the on-chain address of a BIP 21 URI and also pays BOLT11 and BOLT12 |
 | `invoices:create` | Create BOLT11/BOLT12 invoices and incoming refund requests |
 | `payments:read` | Read payments, forwarded payments, and forwarding statistics |
 | `payments:claim` | Claim or fail held BOLT11 payments |
-| `payments:send` | Send BOLT11, BOLT12, spontaneous and unified payments and probes; splice out |
+| `payments:send` | Pay BOLT11 invoices (`Bolt11Send`) and BOLT12 offers (`Bolt12Send`) only |
+| `payments:send_advanced` | Send BOLT11 and spontaneous probes, underpaying BOLT11 payments, BOLT12 refunds and spontaneous payments |
 | `channels:read` | List channels |
-| `channels:manage` | Open, configure, cooperatively close, splice funds into channels, or bump pending splice fees. Opening a channel can push funds to the counterparty, so this permission can move funds out of the node |
+| `channels:manage` | Open, configure, cooperatively close, splice funds into or out of channels, or bump pending splice fees. Opening a channel can push funds to the counterparty and a splice out pays an on-chain address, so this permission can move funds out of the node |
 | `channels:force_close` | Force-close channels |
 | `peers:read` | List peers |
 | `peers:manage` | Connect or disconnect peers |

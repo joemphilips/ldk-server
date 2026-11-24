@@ -11,25 +11,34 @@ use super::*;
 use crate::macaroons::{method_authorization, MethodAuthorization};
 
 #[test]
-fn splicing_requires_direction_specific_permissions() {
-	let (directory, store) = test_store("splice-permission");
+fn sends_that_leave_lightning_need_a_permission_beyond_payments_send() {
+	let (directory, store) = test_store("send-permission");
 	let admin = store.list_roots().unwrap().remove(0);
 	let manager = store
 		.create_root("manager", vec![CHANNELS_MANAGE_PERMISSION.to_string()], &admin)
+		.unwrap()
+		.info;
+	let onchain_sender = store
+		.create_root("onchain-sender", vec![ONCHAIN_SEND_PERMISSION.to_string()], &admin)
 		.unwrap()
 		.info;
 	let sender = store
 		.create_root("sender", vec![PAYMENTS_SEND_PERMISSION.to_string()], &admin)
 		.unwrap()
 		.info;
-	for (method, manager_allowed, sender_allowed) in
-		[(SPLICE_IN_PATH, true, false), (SPLICE_OUT_PATH, false, true)]
-	{
+	for (method, manager_allowed, onchain_sender_allowed, sender_allowed) in [
+		(SPLICE_IN_PATH, true, false, false),
+		(SPLICE_OUT_PATH, true, false, false),
+		(UNIFIED_SEND_PATH, false, true, false),
+		(BOLT11_SEND_PATH, false, false, true),
+		(BOLT12_SEND_PATH, false, false, true),
+	] {
 		let MethodAuthorization::Permission(permission) = method_authorization(method) else {
-			panic!("Splicing must require a permission");
+			panic!("{method} must require a permission");
 		};
-		assert_eq!(manager.allows(permission), manager_allowed);
-		assert_eq!(sender.allows(permission), sender_allowed);
+		assert_eq!(manager.allows(permission), manager_allowed, "{method}");
+		assert_eq!(onchain_sender.allows(permission), onchain_sender_allowed, "{method}");
+		assert_eq!(sender.allows(permission), sender_allowed, "{method}");
 		assert!(admin.allows(permission));
 	}
 	assert!(store
