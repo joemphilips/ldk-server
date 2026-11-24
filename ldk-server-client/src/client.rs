@@ -82,11 +82,11 @@ use prost::Message;
 use reqwest::header::HeaderMap;
 use reqwest::{Body, Certificate, Client};
 
-use crate::error::LdkServerError;
 use crate::error::LdkServerErrorCode::{
 	AuthError, AuthorizationError, InternalError, InternalServerError, InvalidRequestError,
 	LightningError,
 };
+use crate::error::{LdkServerError, CONNECTION_FAILED_MESSAGE_PREFIX};
 
 const GRPC_FRAME_HEADER_LEN: usize = 5;
 
@@ -605,9 +605,7 @@ impl LdkServerClient {
 			.body(grpc_body)
 			.send()
 			.await
-			.map_err(|e| {
-				LdkServerError::new(InternalError, format!("gRPC request failed: {}", e))
-			})?;
+			.map_err(request_error)?;
 
 		// Check for Trailers-Only error responses (grpc-status in response headers).
 		// In gRPC, when there is no response body (error case), the server sends
@@ -647,9 +645,7 @@ impl LdkServerClient {
 			.body(grpc_body)
 			.send()
 			.await
-			.map_err(|e| {
-				LdkServerError::new(InternalError, format!("gRPC request failed: {}", e))
-			})?;
+			.map_err(request_error)?;
 
 		if let Some(error) = grpc_error_from_headers(response.headers()) {
 			return Err(error);
@@ -664,6 +660,16 @@ impl LdkServerClient {
 			trailers_checked: false,
 			_marker: std::marker::PhantomData,
 		})
+	}
+}
+
+/// Maps a failed gRPC request. A caller must know whether the server can have received a
+/// request, for example before it retries a payment, so a connection failure has its own prefix.
+fn request_error(error: reqwest::Error) -> LdkServerError {
+	if error.is_connect() {
+		LdkServerError::new(InternalError, format!("{CONNECTION_FAILED_MESSAGE_PREFIX}{error}"))
+	} else {
+		LdkServerError::new(InternalError, format!("gRPC request failed: {error}"))
 	}
 }
 
@@ -880,6 +886,25 @@ mod tests {
 			trailers_checked: false,
 			_marker: std::marker::PhantomData,
 		}
+	}
+
+	#[tokio::test]
+	async fn test_request_error_marks_a_failed_connection() {
+		// Bind a port and close it, so that nothing listens there.
+		let port = {
+			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+			listener.local_addr().unwrap().port()
+		};
+		let error = Client::new().get(format!("http://127.0.0.1:{port}")).send().await.unwrap_err();
+
+		let error = request_error(error);
+
+		assert_eq!(error.error_code, InternalError);
+		assert!(error.message.starts_with(CONNECTION_FAILED_MESSAGE_PREFIX), "{}", error.message);
+		assert!(error.is_connection_failure());
+		assert!(
+			!LdkServerError::new(InternalError, "gRPC request failed: x").is_connection_failure()
+		);
 	}
 
 	#[test]

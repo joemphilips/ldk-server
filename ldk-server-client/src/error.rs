@@ -9,6 +9,10 @@
 
 use std::fmt;
 
+/// The message prefix of an [`LdkServerErrorCode::InternalError`] for a request that failed
+/// while it connected to the server. The server did not receive such a request.
+pub const CONNECTION_FAILED_MESSAGE_PREFIX: &str = "gRPC connection failed: ";
+
 /// Represents an error returned by the LDK server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LdkServerError {
@@ -24,6 +28,13 @@ pub struct LdkServerError {
 }
 
 impl LdkServerError {
+	/// Returns true when the request failed while it connected to the server, so the server did
+	/// not receive it.
+	pub fn is_connection_failure(&self) -> bool {
+		self.error_code == LdkServerErrorCode::InternalError
+			&& self.message.starts_with(CONNECTION_FAILED_MESSAGE_PREFIX)
+	}
+
 	/// Creates a new [`LdkServerError`] with the given error code and message.
 	pub fn new(error_code: LdkServerErrorCode, message: impl Into<String>) -> Self {
 		Self { error_code, message: message.into() }
