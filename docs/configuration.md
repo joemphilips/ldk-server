@@ -174,11 +174,13 @@ of a new node, set `allow_new_node = true` in `[storage.postgres]`, and remove i
 start. A start with `allow_new_node = true` refuses a database that holds LDK Node data, so that a
 setting that stays in the configuration cannot create a node later.
 
-The first start of a new node stores its ChannelManager before the gRPC service is available (it
-starts and stops the node once). Thus, when the service answered once, the next start needs no
-`allow_new_node`, also after an unclean stop. When the first start ends before that, start without
-`allow_new_node` first. Set it again only when that start reports a database without node data. A
-node without a stored ChannelManager has no channel.
+The first start of a new node stores its ChannelManager before the gRPC service is available. It
+starts and stops the node once, and then reads the ChannelManager from PostgreSQL. When it is
+missing, ldk-server exits with status 255, and the error names the next step. While the write stalls
+in PostgreSQL, the read waits for it, and ldk-server does not serve. Thus, when the service answered
+once, the next start needs no `allow_new_node`, also after an unclean stop. When the first start ends
+before that in another way, start without `allow_new_node` first. Set it again only when that start
+reports a database without node data. A node without a stored ChannelManager has no channel.
 
 A second start on the store of a running node refuses. The running node holds a lease on the store
 for 30 seconds and renews it each 10 seconds. A start waits up to 60 seconds for a stale lease, and

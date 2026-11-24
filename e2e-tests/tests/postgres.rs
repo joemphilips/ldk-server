@@ -15,7 +15,7 @@ use e2e_tests::{
 	mine_and_sync, send_bolt11_payment, setup_funded_channel, start_expect_failure,
 	start_expect_failure_within, wait_for_channels, wait_for_force_close_claims,
 	wait_for_forwarded_payments, wait_for_gossip, wait_for_settled_balance,
-	wait_for_usable_channel, LdkServerHandle, TestBitcoind, TestConfigBuilder,
+	wait_for_usable_channel, LdkServerHandle, TestBitcoind, TestConfigBuilder, TestServerParams,
 };
 use ldk_server_grpc::api::{
 	open_channel_request, ConnectPeerRequest, DisconnectPeerRequest, ForceCloseChannelRequest,
@@ -169,6 +169,57 @@ async fn test_postgres_refuses_a_table_without_node_data() {
 	assert!(stderr.contains("allow_new_node is set, but"), "{stderr}");
 	std::fs::write(&server.config_path, &without_flag).unwrap();
 	server.start_again().await;
+}
+
+fn psql(connection_string: &str, sql: &str) {
+	let output = std::process::Command::new("psql")
+		.args([connection_string, "-v", "ON_ERROR_STOP=1", "-qc", sql])
+		.output()
+		.expect("Failed to run psql");
+	assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// A stop of LDK Node returns success also when its last ChannelManager write did not complete. A
+/// first start must not serve without a stored ChannelManager.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "requires PostgreSQL and psql; set POSTGRES_CONNECTION_STRING with a database name"]
+async fn test_postgres_first_start_refuses_without_a_stored_channel_manager() {
+	let connection_string = std::env::var("POSTGRES_CONNECTION_STRING")
+		.expect("Set POSTGRES_CONNECTION_STRING to a disposable PostgreSQL database");
+	let bitcoind = TestBitcoind::new();
+	let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+	let table_name = format!("lost_write_{}_{nanos}", std::process::id());
+	let config = |params: &TestServerParams, allow_new_node: bool| {
+		// Each start has its own storage directory, but the node of the table has one identity.
+		std::fs::write(
+			params.storage_dir.join("keys_mnemonic"),
+			"zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong\n",
+		)
+		.unwrap();
+		let builder = TestConfigBuilder::new(params).postgres(&connection_string, &table_name);
+		if allow_new_node { builder.allow_new_postgres_node() } else { builder }.build()
+	};
+
+	// A refused start creates the table. Then the database drops each ChannelManager write, and
+	// reports success for it.
+	let stderr = start_expect_failure(&bitcoind, |params| config(params, false));
+	assert!(stderr.contains("holds no LDK Node data"), "{stderr}");
+	psql(
+		&connection_string,
+		&format!(
+			"CREATE FUNCTION {table_name}_drop() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+			 IF NEW.key = 'manager' THEN RETURN NULL; END IF; RETURN NEW; END $$; \
+			 CREATE TRIGGER lost_write BEFORE INSERT ON {table_name} \
+			 FOR EACH ROW EXECUTE FUNCTION {table_name}_drop()"
+		),
+	);
+	let stderr = start_expect_failure(&bitcoind, |params| config(params, true));
+	assert!(stderr.contains("has no ChannelManager in PostgreSQL"), "{stderr}");
+	assert!(stderr.contains("start again with allow_new_node = true"), "{stderr}");
+
+	// The next step that the error names works.
+	psql(&connection_string, &format!("DROP TRIGGER lost_write ON {table_name}"));
+	LdkServerHandle::start_with_config(&bitcoind, |params| config(params, true)).await;
 }
 
 /// The store lease: a second node on the store of a running node refuses to start, and the running

@@ -304,24 +304,16 @@ fn main() {
 	let build_deadline = Instant::now() + KV_STORE_IN_USE_RETRY_TIMEOUT;
 	let mut creates_node = false;
 	if let LdkNodeStorageConfig::Postgres { allow_new_node, .. } = &config_file.ldk_node_storage {
-		let has_node_data = loop {
-			match postgres_has_node_data(&runtime, &config_file.ldk_node_storage) {
-				Ok(found) => break found,
-				Err(e)
-					if e.kind() == std::io::ErrorKind::AlreadyExists
-						&& Instant::now() < build_deadline =>
-				{
-					warn!(
-						"LDK Node storage is in use by another node, retrying in {}s.",
-						KV_STORE_IN_USE_RETRY_INTERVAL.as_secs()
-					);
-					std::thread::sleep(KV_STORE_IN_USE_RETRY_INTERVAL);
-				},
-				Err(e) => {
-					error!("Failed to read LDK Node data from PostgreSQL: {e}");
-					std::process::exit(-1);
-				},
-			}
+		let has_node_data = match read_postgres_has_node_data(
+			&runtime,
+			&config_file.ldk_node_storage,
+			build_deadline,
+		) {
+			Ok(found) => found,
+			Err(e) => {
+				error!("Failed to read LDK Node data from PostgreSQL: {e}");
+				std::process::exit(-1);
+			},
 		};
 		if let Err(e) = check_new_node_allowed(has_node_data, *allow_new_node) {
 			error!("{e}");
@@ -329,10 +321,10 @@ fn main() {
 		}
 		creates_node = !has_node_data;
 	}
-	let node = loop {
+	let build_node_until = |deadline: Instant| loop {
 		match build_node(&builder, node_entropy, &config_file.ldk_node_storage) {
 			Ok(node) => break node,
-			Err(ldk_node::BuildError::KVStoreAlreadyInUse) if Instant::now() < build_deadline => {
+			Err(ldk_node::BuildError::KVStoreAlreadyInUse) if Instant::now() < deadline => {
 				warn!(
 					"LDK Node storage is in use by another node, retrying in {}s.",
 					KV_STORE_IN_USE_RETRY_INTERVAL.as_secs()
@@ -345,13 +337,13 @@ fn main() {
 			},
 		}
 	};
+	let mut node = build_node_until(build_deadline);
 	if uses_postgres {
 		if let Err(e) = persist_postgres_storage_lock(&network_dir) {
 			error!("{e}");
 			std::process::exit(-1);
 		}
 	}
-	let node = Arc::new(node);
 
 	let (event_sender, _) = broadcast::channel::<EventEnvelope>(1024);
 	let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -387,10 +379,28 @@ fn main() {
 		// API is available. A later start then finds node data without allow_new_node, also after
 		// an unclean stop.
 		if let Err(e) = node.start().and_then(|()| node.stop()) {
-			error!("Failed to store the ChannelManager of the new LDK Node: {e}");
+			error!(
+				"Failed to start and stop the new LDK Node once: {e}. {INTERRUPTED_FIRST_START}"
+			);
 			std::process::exit(-1);
 		}
+		// A stop returns success also when the last write did not complete in time. Thus read the
+		// ChannelManager from the store. The drop of the node releases the lease, or keeps it while
+		// a write is outstanding, and the read waits for the lease. A write of the old node cannot
+		// complete after the read took the lease.
+		drop(node);
+		let deadline = Instant::now() + KV_STORE_IN_USE_RETRY_TIMEOUT;
+		if let Err(e) = check_new_node_stored(read_postgres_has_node_data(
+			&runtime,
+			&config_file.ldk_node_storage,
+			deadline,
+		)) {
+			error!("{e}");
+			std::process::exit(-1);
+		}
+		node = build_node_until(deadline);
 	}
+	let node = Arc::new(node);
 	match node.start() {
 		Ok(()) => {},
 		Err(e) => {
@@ -901,6 +911,46 @@ fn postgres_has_node_data(
 	found
 }
 
+/// Like [`postgres_has_node_data`], and waits until `deadline` for a lease of another node.
+fn read_postgres_has_node_data(
+	runtime: &tokio::runtime::Runtime, ldk_node_storage: &LdkNodeStorageConfig, deadline: Instant,
+) -> std::io::Result<bool> {
+	loop {
+		match postgres_has_node_data(runtime, ldk_node_storage) {
+			Err(e)
+				if e.kind() == std::io::ErrorKind::AlreadyExists && Instant::now() < deadline =>
+			{
+				warn!(
+					"LDK Node storage is in use by another node, retrying in {}s.",
+					KV_STORE_IN_USE_RETRY_INTERVAL.as_secs()
+				);
+				std::thread::sleep(KV_STORE_IN_USE_RETRY_INTERVAL);
+			},
+			result => return result,
+		}
+	}
+}
+
+/// The next step when a first start ended and it is not known whether the node is stored.
+const INTERRUPTED_FIRST_START: &str = "Check the PostgreSQL server. Then start without \
+	allow_new_node. Set it again only when that start reports a database without node data.";
+
+/// Checks the store after a new node started and stopped once. Without its ChannelManager the node
+/// must not serve: the next start without allow_new_node would refuse it.
+fn check_new_node_stored(has_node_data: std::io::Result<bool>) -> Result<(), String> {
+	match has_node_data {
+		Ok(true) => Ok(()),
+		Ok(false) => Err("Refusing to serve: the new node has no ChannelManager in PostgreSQL \
+			after its first start and stop. Check the PostgreSQL server. Then start again with \
+			allow_new_node = true."
+			.to_string()),
+		Err(e) => Err(format!(
+			"Refusing to serve: failed to read the ChannelManager of the new node from \
+			 PostgreSQL: {e}. {INTERRUPTED_FIRST_START}"
+		)),
+	}
+}
+
 /// A start without LDK Node data in PostgreSQL creates a new node with the keys of this server.
 /// That is right only for the first start of a new node. Otherwise the database can be empty or
 /// wrong, for example after a configuration error or a restore. A stale `allow_new_node` refuses
@@ -1260,6 +1310,17 @@ mod tests {
 		assert!(check_new_node_allowed(true, false).is_ok());
 		let err = check_new_node_allowed(true, true).unwrap_err();
 		assert!(err.contains("holds LDK Node data"), "{err}");
+	}
+
+	#[test]
+	fn a_new_node_serves_only_with_a_stored_channel_manager() {
+		assert!(check_new_node_stored(Ok(true)).is_ok());
+		let err = check_new_node_stored(Ok(false)).unwrap_err();
+		assert!(err.contains("start again with allow_new_node = true"), "{err}");
+		let lease = std::io::Error::new(std::io::ErrorKind::AlreadyExists, "lease is unavailable");
+		let err = check_new_node_stored(Err(lease)).unwrap_err();
+		assert!(err.contains("lease is unavailable"), "{err}");
+		assert!(err.contains("start without allow_new_node"), "{err}");
 	}
 
 	#[test]
