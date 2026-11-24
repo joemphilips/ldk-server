@@ -22,3 +22,7 @@ ldk-server-grpc = { path = "../ldk-server-grpc", features = ["serde"] }
 serde_json = "1.0"
 hex-conservative = { version = "0.2", features = ["std"] }
 ldk-node = { git = "https://github.com/lightningdevkit/ldk-node", rev = "179b4b263762155a7ff515ddad7e757a80807fd5" }
+
+# As in the workspace: Cargo applies a patch only from the root of a build.
+[patch.crates-io]
+libsqlite3-sys = { git = "https://github.com/joemphilips/cdk", rev = "fee0f9d4d63b4d121c608b6e43e407e4b080d50e" }

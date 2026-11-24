@@ -10,3 +10,9 @@ lto = true
 
 [profile.dev]
 panic = "abort"
+
+# The fork only: LDK Node bundles SQLite through libsqlite3-sys 0.28.0. This source is that crate
+# with the upstream correction of the WAL page initialization (RUSTSEC-2026-0459). Its build script
+# verifies each source file. Remove it when LDK Node depends on a release with the correction.
+[patch.crates-io]
+libsqlite3-sys = { git = "https://github.com/joemphilips/cdk", rev = "fee0f9d4d63b4d121c608b6e43e407e4b080d50e" }
