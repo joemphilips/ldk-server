@@ -1472,6 +1472,25 @@ impl ArgsConfig {
 	}
 }
 
+/// The error of an invalid config file. The error of the parser quotes the source line, and its
+/// message can quote a value. A value can be a password, so the error names the line, and the
+/// message only when it names a field.
+fn invalid_toml_err(content: &str, err: &toml::de::Error) -> io::Error {
+	let line = err
+		.span()
+		.map(|span| content.bytes().take(span.start).filter(|b| *b == b'\n').count() + 1)
+		.map_or_else(String::new, |line| format!(" at line {}", line));
+	let message = Some(err.message())
+		.filter(|message| {
+			["unknown field `", "missing field `"].iter().any(|p| message.starts_with(p))
+		})
+		.map_or_else(String::new, |message| format!(": {}", message));
+	io::Error::new(
+		io::ErrorKind::InvalidData,
+		format!("Config file contains invalid TOML format{}{}", line, message),
+	)
+}
+
 pub fn load_config(args: &ArgsConfig) -> io::Result<Config> {
 	let mut builder = ConfigBuilder::default();
 
@@ -1485,12 +1504,8 @@ pub fn load_config(args: &ArgsConfig) -> io::Result<Config> {
 		let content = read_to_string_with_limit(&path, CONFIG_FILE_SIZE_LIMIT).map_err(|e| {
 			io::Error::new(e.kind(), format!("Failed to read config file '{:?}': {}", path, e))
 		})?;
-		let toml_config: TomlConfig = toml::from_str(&content).map_err(|e| {
-			io::Error::new(
-				io::ErrorKind::InvalidData,
-				format!("Config file contains invalid TOML format: {}", e),
-			)
-		})?;
+		let toml_config: TomlConfig =
+			toml::from_str(&content).map_err(|e| invalid_toml_err(&content, &e))?;
 
 		builder.merge_toml(toml_config);
 	}
@@ -2246,6 +2261,36 @@ mod tests {
 					allow_new_node: false,
 				}
 			);
+		}
+	}
+
+	#[test]
+	fn test_invalid_config_file_error_prints_no_value() {
+		let storage_path = std::env::temp_dir();
+		let postgres = "[storage.postgres]\n";
+		let cases = [
+			("syntax", format!("{postgres}connection_string = \"synthetic-secret"), 2),
+			("unknown_key", format!("{postgres}connection_strin = \"synthetic-secret\""), 2),
+			(
+				"type",
+				"[node]\n\nnetwork = \"regtest\"\nalias = [\"synthetic-secret\"]".to_string(),
+				4,
+			),
+			("value", "[node]\nnetwork = \"synthetic-secret\"".to_string(), 2),
+		];
+
+		for (case_name, content, line) in cases {
+			let path =
+				storage_path.join(format!("test_invalid_config_prints_no_value_{case_name}.toml"));
+			fs::write(&path, content).unwrap();
+			let mut args_config = empty_args_config();
+			args_config.config_file = Some(path.to_string_lossy().to_string());
+
+			let err = load_config(&args_config).unwrap_err();
+			let error = err.to_string();
+			let expected = format!("Config file contains invalid TOML format at line {line}");
+			assert!(error.starts_with(&expected), "{case_name}: {error}");
+			assert!(!error.contains("synthetic-secret"), "{case_name}: {error}");
 		}
 	}
 
