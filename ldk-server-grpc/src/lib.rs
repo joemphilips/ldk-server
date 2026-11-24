@@ -14,6 +14,7 @@ pub mod endpoints;
 pub mod error;
 pub mod events;
 pub mod grpc;
+pub mod node_error_messages;
 pub mod permissions;
 #[cfg(feature = "serde")]
 pub mod serde_utils;

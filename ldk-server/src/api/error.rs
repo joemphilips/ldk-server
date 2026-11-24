@@ -151,6 +151,19 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn node_error_messages_that_clients_match_are_the_ldk_node_texts() {
+		use ldk_server_grpc::node_error_messages::{DUPLICATE_PAYMENT, NOT_RUNNING};
+
+		let not_running = LdkServerError::from(NodeError::NotRunning);
+		assert_eq!(not_running.message, NOT_RUNNING);
+		assert_eq!(not_running.error_code, LdkServerErrorCode::InternalServerError);
+
+		let duplicate = LdkServerError::from(NodeError::DuplicatePayment);
+		assert_eq!(duplicate.message, DUPLICATE_PAYMENT);
+		assert_eq!(duplicate.error_code, LdkServerErrorCode::LightningError);
+	}
+
+	#[test]
 	fn payer_proof_creation_failure_is_invalid_request() {
 		let error = LdkServerError::from(NodeError::PayerProofCreationFailed);
 
