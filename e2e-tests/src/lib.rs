@@ -251,13 +251,13 @@ impl TestConfigBuilder {
 		self
 	}
 
-	/// Store LDK Node state in PostgreSQL, keeping keys and server files on disk.
 	/// Let the first start of a node create it on a PostgreSQL table without node data.
 	pub fn allow_new_postgres_node(mut self) -> Self {
 		self.allow_new_postgres_node = true;
 		self
 	}
 
+	/// Store LDK Node state in PostgreSQL, keeping keys and server files on disk.
 	pub fn postgres(mut self, connection_string: &str, kv_table_name: &str) -> Self {
 		self.postgres = Some((connection_string.to_string(), kv_table_name.to_string()));
 		self
@@ -487,9 +487,14 @@ impl LdkServerHandle {
 
 	/// Kill and restart the server with the same config and storage to test crash recovery.
 	pub async fn restart(&mut self) {
+		self.kill();
+		self.start_again().await;
+	}
+
+	/// Kill the server, so that it stops without a final write.
+	pub fn kill(&mut self) {
 		self.child.0.kill().expect("Failed to kill ldk-server");
 		self.child.0.wait().expect("Failed to reap ldk-server");
-		self.start_again().await;
 	}
 
 	/// Stop the server with SIGTERM, as a service manager does, and wait for its exit.
@@ -515,6 +520,12 @@ impl LdkServerHandle {
 		forward_server_output(&mut self.child.0);
 		let info = wait_for_server_ready(self, Duration::from_secs(60)).await;
 		assert_eq!(info.node_id, self.node_id, "Node identity changed after restart");
+	}
+
+	/// Start a stopped server again with its config file and storage, and expect the start to
+	/// fail. Returns the stderr output.
+	pub fn start_again_expect_failure(&mut self) -> String {
+		expect_failure(spawn_server_process(&self.config_path), START_FAILURE_TIMEOUT)
 	}
 
 	pub fn client(&self) -> &LdkServerClient {
@@ -598,9 +609,21 @@ fn forward_server_output(child: &mut Child) {
 pub fn start_expect_failure(
 	bitcoind: &TestBitcoind, config_fn: impl FnOnce(&TestServerParams) -> String,
 ) -> String {
-	let (mut child, ..) = spawn_server(bitcoind, config_fn);
+	let (child, ..) = spawn_server(bitcoind, config_fn);
+	expect_failure(child, START_FAILURE_TIMEOUT)
+}
 
-	let timeout = Duration::from_secs(30);
+/// Like [`start_expect_failure`], with another bound on the time until the exit.
+pub fn start_expect_failure_within(
+	bitcoind: &TestBitcoind, timeout: Duration, config_fn: impl FnOnce(&TestServerParams) -> String,
+) -> String {
+	let (child, ..) = spawn_server(bitcoind, config_fn);
+	expect_failure(child, timeout)
+}
+
+const START_FAILURE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn expect_failure(mut child: Child, timeout: Duration) -> String {
 	let start = std::time::Instant::now();
 	loop {
 		match child.try_wait() {

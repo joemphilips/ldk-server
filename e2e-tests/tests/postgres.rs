@@ -13,9 +13,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use e2e_tests::{
 	assert_recovered_balance, close_channel, expected_onchain_balance, list_payments,
 	mine_and_sync, send_bolt11_payment, setup_funded_channel, start_expect_failure,
-	wait_for_channels, wait_for_force_close_claims, wait_for_forwarded_payments, wait_for_gossip,
-	wait_for_settled_balance, wait_for_usable_channel, LdkServerHandle, TestBitcoind,
-	TestConfigBuilder,
+	start_expect_failure_within, wait_for_channels, wait_for_force_close_claims,
+	wait_for_forwarded_payments, wait_for_gossip, wait_for_settled_balance,
+	wait_for_usable_channel, LdkServerHandle, TestBitcoind, TestConfigBuilder,
 };
 use ldk_server_grpc::api::{
 	open_channel_request, ConnectPeerRequest, DisconnectPeerRequest, ForceCloseChannelRequest,
@@ -119,6 +119,10 @@ async fn start_postgres(bitcoind: &TestBitcoind, connection_string: &str) -> Ldk
 	.await;
 	assert!(server.storage_dir.join("regtest/ldk_node_postgres.lock").exists());
 	assert!(!server.storage_dir.join("regtest/ldk_node_data.sqlite").exists());
+	// A restart with the flag refuses, so remove it after the first start, as an operator does.
+	let config = std::fs::read_to_string(&server.config_path).unwrap();
+	assert!(config.contains("allow_new_node = true\n"));
+	std::fs::write(&server.config_path, config.replace("allow_new_node = true\n", "")).unwrap();
 	server
 }
 
@@ -141,18 +145,60 @@ async fn test_postgres_refuses_a_table_without_node_data() {
 		assert!(stderr.contains("holds no LDK Node data"), "{stderr}");
 	}
 
-	let mut without_flag = None;
 	let mut server = LdkServerHandle::start_with_config(&bitcoind, |params| {
-		let builder = TestConfigBuilder::new(params).postgres(&connection_string, &table_name);
-		without_flag = Some(builder.build());
-		builder.allow_new_postgres_node().build()
+		TestConfigBuilder::new(params)
+			.postgres(&connection_string, &table_name)
+			.allow_new_postgres_node()
+			.build()
 	})
 	.await;
-	// A new block and the graceful stop make LDK persist its ChannelManager.
-	mine_and_sync(&bitcoind, &[&server], 1).await;
-	server.stop().await;
-	std::fs::write(&server.config_path, without_flag.unwrap()).unwrap();
+	let with_flag = std::fs::read_to_string(&server.config_path).unwrap();
+	let without_flag = with_flag.replace("allow_new_node = true\n", "");
+
+	// A started new node has its ChannelManager stored, before a block or a channel and without
+	// a graceful stop. Thus the next start needs no flag.
+	server.kill();
+	std::fs::write(&server.config_path, &without_flag).unwrap();
 	server.start_again().await;
+
+	// With node data, the flag is stale. A start with it refuses, so that a flag that stays in
+	// the configuration cannot create a node after the database changed.
+	server.stop().await;
+	std::fs::write(&server.config_path, with_flag).unwrap();
+	let stderr = server.start_again_expect_failure();
+	assert!(stderr.contains("allow_new_node is set, but"), "{stderr}");
+	std::fs::write(&server.config_path, &without_flag).unwrap();
+	server.start_again().await;
+}
+
+/// The store lease: a second node on the store of a running node refuses to start, and the running
+/// node keeps its lease.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires PostgreSQL; set POSTGRES_CONNECTION_STRING"]
+async fn test_postgres_second_start_refuses_while_the_lease_is_live() {
+	let connection_string = std::env::var("POSTGRES_CONNECTION_STRING")
+		.expect("Set POSTGRES_CONNECTION_STRING to a disposable PostgreSQL database");
+	let bitcoind = TestBitcoind::new();
+	let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+	let table_name = format!("lease_{}_{nanos}", std::process::id());
+	let server = LdkServerHandle::start_with_config(&bitcoind, |params| {
+		TestConfigBuilder::new(params)
+			.postgres(&connection_string, &table_name)
+			.allow_new_postgres_node()
+			.build()
+	})
+	.await;
+
+	// A start waits up to 60 s for a stale lease, which is longer than two lease periods. The
+	// running node renews its lease, so the wait ends with a refusal.
+	let stderr = start_expect_failure_within(&bitcoind, Duration::from_secs(120), |params| {
+		TestConfigBuilder::new(params).postgres(&connection_string, &table_name).build()
+	});
+	assert!(stderr.contains("PostgreSQL node lease is unavailable"), "{stderr}");
+
+	// A node that lost its lease aborts at its next write. This call writes wallet data.
+	server.client().onchain_receive(OnchainReceiveRequest {}).await.unwrap();
+	server.client().get_node_info(GetNodeInfoRequest {}).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

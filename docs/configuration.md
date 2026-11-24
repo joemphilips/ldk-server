@@ -171,8 +171,17 @@ A start refuses a PostgreSQL database that holds no LDK Node data (no ChannelMan
 key `manager`), because the start would create a new node with the keys of this server. An empty
 or wrong database can be the result of a configuration error or a restore. For the first start
 of a new node, set `allow_new_node = true` in `[storage.postgres]`, and remove it after that
-start. When the database holds node data, the setting has no effect and ldk-server logs a
-warning.
+start. A start with `allow_new_node = true` refuses a database that holds LDK Node data, so that a
+setting that stays in the configuration cannot create a node later.
+
+The first start of a new node stores its ChannelManager before the gRPC service is available (it
+starts and stops the node once). Thus, when the service answered once, the next start needs no
+`allow_new_node`, also after an unclean stop. When the first start ends before that, the next start
+needs `allow_new_node` again. A node without a stored ChannelManager has no channel.
+
+A second start on the store of a running node refuses. The running node holds a lease on the store
+for 30 seconds and renews it each 10 seconds. A start waits up to 60 seconds for a stale lease, and
+then exits.
 
 Storage migration is not supported. ldk-server refuses to start with PostgreSQL when an existing
 `ldk_node_data.sqlite` file is present. After the first successful PostgreSQL node build,

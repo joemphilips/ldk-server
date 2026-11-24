@@ -49,7 +49,7 @@ dir_path = "/tmp/ldk-server/"                 # Path for local ldk-server data, 
 #db_name = "ldk_db"                         # Optional database name.
 #kv_table_name = "ldk_data"                 # Optional KV table name.
 #certificate_path = "/path/to/postgres-ca.pem" # PEM-encoded CA certificate required to enable PostgreSQL TLS.
-#allow_new_node = true                       # First start of a new node only: without it, a start refuses a database without node data.
+#allow_new_node = true                       # First start of a new node only: without it, a start refuses a database without node data. With it, a start refuses a database with node data.
 # Without certificate_path, the default sslmode=prefer uses plaintext; sslmode=require fails to connect.
 # With certificate_path, TLS is required; sslmode=disable is rejected.
 

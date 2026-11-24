@@ -300,6 +300,7 @@ fn main() {
 	let uses_postgres =
 		matches!(config_file.ldk_node_storage, LdkNodeStorageConfig::Postgres { .. });
 	let build_deadline = Instant::now() + KV_STORE_IN_USE_RETRY_TIMEOUT;
+	let mut creates_node = false;
 	if let LdkNodeStorageConfig::Postgres { allow_new_node, .. } = &config_file.ldk_node_storage {
 		let has_node_data = loop {
 			match postgres_has_node_data(&runtime, &config_file.ldk_node_storage) {
@@ -324,6 +325,7 @@ fn main() {
 			error!("{e}");
 			std::process::exit(-1);
 		}
+		creates_node = !has_node_data;
 	}
 	let node = loop {
 		match build_node(&builder, node_entropy, &config_file.ldk_node_storage) {
@@ -377,6 +379,16 @@ fn main() {
 	let mut sigint_stream = register_signal(&runtime, SignalKind::interrupt());
 
 	info!("Starting ldk-server version {FULL_VERSION}");
+	if creates_node {
+		// LDK writes a new ChannelManager only after a new block, a channel or another event, and
+		// at a stop. Start and stop the node once, so that its ChannelManager is stored before the
+		// API is available. A later start then finds node data without allow_new_node, also after
+		// an unclean stop.
+		if let Err(e) = node.start().and_then(|()| node.stop()) {
+			error!("Failed to store the ChannelManager of the new LDK Node: {e}");
+			std::process::exit(-1);
+		}
+	}
 	match node.start() {
 		Ok(()) => {},
 		Err(e) => {
@@ -889,16 +901,16 @@ fn postgres_has_node_data(
 
 /// A start without LDK Node data in PostgreSQL creates a new node with the keys of this server.
 /// That is right only for the first start of a new node. Otherwise the database can be empty or
-/// wrong, for example after a configuration error or a restore.
+/// wrong, for example after a configuration error or a restore. A stale `allow_new_node` refuses
+/// too: it would let a later start create a node on such a database.
 fn check_new_node_allowed(has_node_data: bool, allow_new_node: bool) -> Result<(), String> {
 	match (has_node_data, allow_new_node) {
 		(true, false) => Ok(()),
 		(true, true) => {
-			warn!(
-				"allow_new_node is set, but the PostgreSQL database holds LDK Node data. Remove \
-				 allow_new_node from [storage.postgres] after the first start."
-			);
-			Ok(())
+			Err("Refusing to start: allow_new_node is set, but the PostgreSQL database \
+			holds LDK Node data. Remove allow_new_node from [storage.postgres]. It is only for the \
+			first start of a new node."
+				.to_string())
 		},
 		(false, true) => {
 			info!("The PostgreSQL database holds no LDK Node data; allow_new_node creates a node.");
@@ -1239,12 +1251,13 @@ mod tests {
 	}
 
 	#[test]
-	fn a_database_without_node_data_needs_allow_new_node() {
+	fn a_start_needs_node_data_or_allow_new_node_but_not_both() {
 		let err = check_new_node_allowed(false, false).unwrap_err();
 		assert!(err.contains("holds no LDK Node data"), "{err}");
 		assert!(check_new_node_allowed(false, true).is_ok());
 		assert!(check_new_node_allowed(true, false).is_ok());
-		assert!(check_new_node_allowed(true, true).is_ok());
+		let err = check_new_node_allowed(true, true).unwrap_err();
+		assert!(err.contains("holds LDK Node data"), "{err}");
 	}
 
 	#[test]

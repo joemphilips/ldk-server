@@ -113,7 +113,7 @@ pub enum LdkNodeStorageConfig {
 		kv_table_name: Option<String>,
 		certificate_pem: Option<String>,
 		/// Lets a start create a node in a database without LDK Node data. Only the first start
-		/// of a new node needs it.
+		/// of a new node needs it. A start with it refuses a database with LDK Node data.
 		allow_new_node: bool,
 	},
 }
