@@ -176,8 +176,9 @@ setting that stays in the configuration cannot create a node later.
 
 The first start of a new node stores its ChannelManager before the gRPC service is available (it
 starts and stops the node once). Thus, when the service answered once, the next start needs no
-`allow_new_node`, also after an unclean stop. When the first start ends before that, the next start
-needs `allow_new_node` again. A node without a stored ChannelManager has no channel.
+`allow_new_node`, also after an unclean stop. When the first start ends before that, start without
+`allow_new_node` first. Set it again only when that start reports a database without node data. A
+node without a stored ChannelManager has no channel.
 
 A second start on the store of a running node refuses. The running node holds a lease on the store
 for 30 seconds and renews it each 10 seconds. A start waits up to 60 seconds for a stale lease, and
