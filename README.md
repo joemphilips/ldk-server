@@ -51,6 +51,7 @@ git clone https://github.com/lightningdevkit/ldk-server.git
 cd ldk-server
 cargo build --release
 cp contrib/ldk-server-config.toml my-config.toml  # edit with your settings
+# write the BIP39 mnemonic of the node to <storage_dir>/keys_mnemonic
 ./target/release/ldk-server my-config.toml
 ```
 

@@ -11,39 +11,40 @@ use std::io;
 use std::path::Path;
 use std::str::FromStr;
 
-use ldk_node::bip39::{Mnemonic, WordCount};
+use ldk_node::bip39::Mnemonic;
 use ldk_node::entropy::NodeEntropy;
-use log::info;
 
-use crate::util::{create_dir_all_private, read_to_string_with_limit, write_new};
+use crate::util::read_to_string_with_limit;
 
 const DEFAULT_MNEMONIC_FILE: &str = "keys_mnemonic";
 const MNEMONIC_FILE_SIZE_LIMIT: usize = 1024;
 
-pub(crate) fn load_or_generate_node_entropy(storage_dir: &Path) -> io::Result<NodeEntropy> {
+/// Reads the node mnemonic. It never creates one: a missing file can be a missing mount or a wrong
+/// storage directory of an existing node, and a new mnemonic is a node with another identity.
+pub(crate) fn load_node_entropy(storage_dir: &Path) -> io::Result<NodeEntropy> {
 	let mnemonic_path = storage_dir.join(DEFAULT_MNEMONIC_FILE);
 
-	let mnemonic = match read_to_string_with_limit(&mnemonic_path, MNEMONIC_FILE_SIZE_LIMIT) {
-		Ok(raw) => Mnemonic::from_str(raw.trim()).map_err(|e| {
+	let raw = read_to_string_with_limit(&mnemonic_path, MNEMONIC_FILE_SIZE_LIMIT).map_err(|e| {
+		if e.kind() == io::ErrorKind::NotFound {
 			io::Error::new(
-				io::ErrorKind::InvalidData,
-				format!("Invalid BIP39 mnemonic in {}: {}", mnemonic_path.display(), e),
+				io::ErrorKind::NotFound,
+				format!(
+					"Refusing to start: the node mnemonic file {} is missing. ldk-server does not \
+					 create it. Write the BIP39 mnemonic of this node to it before the start. The \
+					 first start of a new node needs a new mnemonic there.",
+					mnemonic_path.display()
+				),
 			)
-		})?,
-		Err(e) if e.kind() == io::ErrorKind::NotFound => {
-			if let Some(parent) = mnemonic_path.parent() {
-				create_dir_all_private(parent)?;
-			}
-			let mnemonic = Mnemonic::generate(WordCount::Words24).map_err(io::Error::other)?;
-			write_new(&mnemonic_path, format!("{}\n", mnemonic).as_bytes(), 0o600)?;
-			info!(
-				"Generated new BIP39 mnemonic at {}. Back up this file securely — it is required to recover on-chain funds.",
-				mnemonic_path.display()
-			);
-			mnemonic
-		},
-		Err(e) => return Err(e),
-	};
+		} else {
+			e
+		}
+	})?;
+	let mnemonic = Mnemonic::from_str(raw.trim()).map_err(|e| {
+		io::Error::new(
+			io::ErrorKind::InvalidData,
+			format!("Invalid BIP39 mnemonic in {}: {}", mnemonic_path.display(), e),
+		)
+	})?;
 
 	Ok(NodeEntropy::from_bip39_mnemonic(mnemonic, None))
 }
@@ -51,7 +52,6 @@ pub(crate) fn load_or_generate_node_entropy(storage_dir: &Path) -> io::Result<No
 #[cfg(test)]
 mod tests {
 	use std::fs;
-	use std::os::unix::fs::{MetadataExt, PermissionsExt};
 	use std::path::PathBuf;
 
 	use super::*;
@@ -71,25 +71,25 @@ mod tests {
 	}
 
 	#[test]
-	fn generates_mnemonic_on_fresh_start() {
-		let dir = tempdir("fresh");
+	fn refuses_a_missing_mnemonic_file() {
+		let dir = tempdir("missing");
 
-		load_or_generate_node_entropy(&dir).unwrap();
+		let err = load_node_entropy(&dir).unwrap_err();
 
-		let mnemonic_path = dir.join(DEFAULT_MNEMONIC_FILE);
-		assert!(mnemonic_path.exists(), "keys_mnemonic was not created");
+		assert_eq!(err.kind(), io::ErrorKind::NotFound);
+		let path = dir.join(DEFAULT_MNEMONIC_FILE);
+		assert!(err.to_string().contains(path.to_str().unwrap()), "{err}");
+		assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "a refused start created a file");
+	}
 
-		let perms = fs::metadata(&mnemonic_path).unwrap().permissions();
-		assert_eq!(perms.mode() & 0o777, 0o600, "expected 0600 permissions");
+	#[test]
+	fn refuses_a_missing_storage_directory() {
+		let dir = tempdir("no-storage").join("storage");
 
-		let content = fs::read_to_string(&mnemonic_path).unwrap();
-		let word_count = content.trim().split_whitespace().count();
-		assert_eq!(word_count, 24, "expected 24-word mnemonic, got {}", word_count);
+		let err = load_node_entropy(&dir).unwrap_err();
 
-		let mtime_before = fs::metadata(&mnemonic_path).unwrap().mtime();
-		load_or_generate_node_entropy(&dir).unwrap();
-		let mtime_after = fs::metadata(&mnemonic_path).unwrap().mtime();
-		assert_eq!(mtime_before, mtime_after, "mnemonic file was rewritten on second call");
+		assert_eq!(err.kind(), io::ErrorKind::NotFound);
+		assert!(!dir.exists(), "a refused start created the storage directory");
 	}
 
 	#[test]
@@ -99,21 +99,21 @@ mod tests {
 		fs::write(&mnemonic_path, format!("{}\n", KNOWN_MNEMONIC)).unwrap();
 		let bytes_before = fs::read(&mnemonic_path).unwrap();
 
-		load_or_generate_node_entropy(&dir).unwrap();
+		load_node_entropy(&dir).unwrap();
 
 		let bytes_after = fs::read(&mnemonic_path).unwrap();
 		assert_eq!(bytes_before, bytes_after, "mnemonic file content changed");
 	}
 
 	#[test]
-	fn default_entropy_ignores_stale_keys_seed() {
+	fn a_stale_keys_seed_does_not_replace_the_mnemonic() {
 		let dir = tempdir("stale-seed");
 		let stale_seed_path = dir.join(STALE_SEED_FILE);
 		fs::write(&stale_seed_path, vec![0x42u8; 64]).unwrap();
 
-		load_or_generate_node_entropy(&dir).unwrap();
+		let err = load_node_entropy(&dir).unwrap_err();
 
-		assert!(dir.join(DEFAULT_MNEMONIC_FILE).exists(), "keys_mnemonic was not created");
+		assert_eq!(err.kind(), io::ErrorKind::NotFound);
 		assert!(stale_seed_path.exists(), "stale keys_seed was removed");
 	}
 
@@ -126,7 +126,7 @@ mod tests {
 		)
 		.unwrap();
 
-		let err = load_or_generate_node_entropy(&dir).unwrap_err();
+		let err = load_node_entropy(&dir).unwrap_err();
 		assert_eq!(err.kind(), io::ErrorKind::InvalidData);
 	}
 
@@ -136,7 +136,7 @@ mod tests {
 		fs::write(dir.join(DEFAULT_MNEMONIC_FILE), vec![b'a'; MNEMONIC_FILE_SIZE_LIMIT + 1])
 			.unwrap();
 
-		let err = load_or_generate_node_entropy(&dir).unwrap_err();
+		let err = load_node_entropy(&dir).unwrap_err();
 		assert_eq!(err.kind(), io::ErrorKind::InvalidData);
 	}
 }

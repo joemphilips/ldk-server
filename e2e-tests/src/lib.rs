@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use corepc_node::Node;
+use ldk_node::bip39::{Mnemonic, WordCount};
 use ldk_node::bitcoin::Amount;
 use ldk_server_client::client::{EventStream, LdkServerClient};
 use ldk_server_client::error::LdkServerErrorCode;
@@ -557,6 +558,11 @@ fn spawn_server(
 
 	let params =
 		TestServerParams { grpc_port, p2p_port, storage_dir, rpc_address, rpc_user, rpc_password };
+
+	// ldk-server does not create its mnemonic, so write it before the first start, as an install
+	// does.
+	let mnemonic = Mnemonic::generate(WordCount::Words24).unwrap();
+	std::fs::write(params.storage_dir.join("keys_mnemonic"), format!("{mnemonic}\n")).unwrap();
 
 	let config_content = config_fn(&params);
 

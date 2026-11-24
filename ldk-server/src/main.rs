@@ -148,6 +148,16 @@ fn main() {
 		},
 	};
 
+	// Read the mnemonic before the first write of credentials, so that a start on a wrong or empty
+	// storage directory leaves no credentials there.
+	let node_entropy = match crate::util::entropy::load_node_entropy(&storage_dir) {
+		Ok(entropy) => entropy,
+		Err(e) => {
+			error!("Failed to load node entropy: {e}");
+			std::process::exit(-1);
+		},
+	};
+
 	let macaroon_store = match MacaroonStore::load_or_create(&network_dir) {
 		Ok(store) => Arc::new(store),
 		Err(e) => {
@@ -288,14 +298,6 @@ fn main() {
 		error!("{e}");
 		std::process::exit(-1);
 	}
-
-	let node_entropy = match crate::util::entropy::load_or_generate_node_entropy(&storage_dir) {
-		Ok(entropy) => entropy,
-		Err(e) => {
-			error!("Failed to load or generate node entropy: {e}");
-			std::process::exit(-1);
-		},
-	};
 
 	let uses_postgres =
 		matches!(config_file.ldk_node_storage, LdkNodeStorageConfig::Postgres { .. });

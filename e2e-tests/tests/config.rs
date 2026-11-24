@@ -173,3 +173,26 @@ async fn test_config_chain_source_bitcoind_rest() {
 	let info = server.client().get_node_info(GetNodeInfoRequest {}).await.unwrap();
 	assert!(info.current_best_block.is_some());
 }
+
+/// ldk-server does not create a mnemonic: on a wrong or empty storage directory, a new mnemonic
+/// would start another node.
+#[tokio::test]
+async fn test_start_refuses_a_missing_mnemonic_file() {
+	let bitcoind = TestBitcoind::new();
+	let mut storage_dir = None;
+	let stderr = start_expect_failure(&bitcoind, |params| {
+		std::fs::remove_file(params.storage_dir.join("keys_mnemonic")).unwrap();
+		storage_dir = Some(params.storage_dir.clone());
+		TestConfigBuilder::new(params).build()
+	});
+	let storage_dir = storage_dir.unwrap();
+	let mnemonic_path = storage_dir.join("keys_mnemonic");
+	assert!(
+		stderr.contains(&format!("node mnemonic file {} is missing", mnemonic_path.display())),
+		"{stderr}"
+	);
+	assert!(!mnemonic_path.exists());
+	assert!(!storage_dir.join("tls.crt").exists());
+	assert!(!storage_dir.join("regtest/macaroons").exists());
+	assert!(!storage_dir.join("regtest/ldk_node_data.sqlite").exists());
+}

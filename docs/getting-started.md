@@ -58,6 +58,18 @@ rpc_password = "pass"
 Everything else has sensible defaults. See [Configuration](configuration.md) for the full
 reference.
 
+## Write the Node Mnemonic
+
+ldk-server does not create its mnemonic. Before the first start, create a new BIP39 mnemonic (24
+words) with a BIP39 tool, and write it to `keys_mnemonic` in the storage directory. The default
+storage directory is `~/.ldk-server/` on Linux. Keep a copy: it is required to recover on-chain
+funds. See [Configuration](configuration.md#storage-layout).
+
+```bash
+install -d -m 0700 ~/.ldk-server
+(umask 077 && cat > ~/.ldk-server/keys_mnemonic)   # paste the words, then Enter and Ctrl-D
+```
+
 ## Start the Server
 
 ```bash

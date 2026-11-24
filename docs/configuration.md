@@ -297,7 +297,7 @@ Two resolution methods are supported via the `mode` field:
 
 ```
 <storage_dir>/
-  keys_mnemonic          # BIP39 mnemonic (default for new installs)
+  keys_mnemonic          # BIP39 mnemonic (required, ldk-server does not create it)
   tls.crt                # TLS certificate (PEM)
   tls.key                # TLS private key (PEM)
   <network>/                # e.g., bitcoin/, regtest/, signet/
@@ -311,11 +311,23 @@ Two resolution methods are supported via the `mode` field:
     ldk_node_data.sqlite   # LDK Node state, payments, and forwarding history
 ```
 
-The mnemonic is the node's master secret, required to recover on-chain funds. On first start,
-ldk-server generates a fresh 24-word BIP39 mnemonic at `<storage_dir>/keys_mnemonic` if the file
-does not already exist. `ldk_node_data.sqlite` holds channel state and payment history. Both files
-are required to recover channel funds. See [Operations - Backups](operations.md#backups) for backup
-guidance.
+The mnemonic is the node's master secret, required to recover on-chain funds. ldk-server reads it
+only from `<storage_dir>/keys_mnemonic`. It does not create the file. A start without the file
+refuses, also on an empty storage directory, and writes no mnemonic, macaroon or TLS file. A
+missing file can be a missing mount or a wrong storage directory, and a new mnemonic is a node with
+another identity.
+
+Before the first start of a new node, write a new BIP39 mnemonic (one line, 24 words) to the file.
+Create it with a BIP39 tool, and let only the user of ldk-server read it:
+
+```bash
+install -d -m 0700 <storage_dir>
+(umask 077 && cat > <storage_dir>/keys_mnemonic)   # paste the words, then Enter and Ctrl-D
+```
+
+The file can be a read-only mount. `ldk_node_data.sqlite` holds channel state and payment history.
+Both files are required to recover channel funds. See [Operations - Backups](operations.md#backups)
+for backup guidance.
 
 When `[storage.postgres]` is configured, LDK Node wallet state, channel state, payment
 history, and forwarding history are stored in PostgreSQL instead of `ldk_node_data.sqlite`.

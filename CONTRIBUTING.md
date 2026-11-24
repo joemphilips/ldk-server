@@ -12,6 +12,8 @@ cargo build --release          # Production build (LTO enabled)
 
 ## Running
 
+Write a BIP39 mnemonic to `<storage_dir>/keys_mnemonic` first; ldk-server does not create it.
+
 ```bash
 cargo run --bin ldk-server ./contrib/ldk-server-config.toml
 ```
