@@ -41,7 +41,7 @@ use ldk_server_grpc::types::{HtlcLocator, Payment};
 use log::{debug, error, info, warn};
 #[cfg(test)]
 use prost::Message;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::signal::unix::{Signal, SignalKind};
 use tokio::sync::broadcast;
@@ -773,9 +773,9 @@ fn main() {
 
 					}
 				},
-				res = grpc_listener.accept() => {
+				res = accept_grpc_connection(&grpc_listener) => {
 					match res {
-						Ok((stream, _)) => {
+						Ok(stream) => {
 							let node_service = NodeService::new(
 								Arc::clone(&node),
 								Arc::clone(&macaroon_store),
@@ -824,6 +824,22 @@ fn main() {
 	node.stop().expect("Shutdown should always succeed.");
 	info!("Shutdown complete..");
 	log::logger().flush();
+}
+
+/// Accepts a connection of the gRPC service. Cancel safe: only the accept itself waits.
+async fn accept_grpc_connection(listener: &TcpListener) -> std::io::Result<TcpStream> {
+	let (stream, _) = listener.accept().await?;
+	Ok(with_nodelay(stream))
+}
+
+/// A response has more than one small write. Without `TCP_NODELAY`, a later write waits for the
+/// delayed acknowledgement of the client, about 40 ms. The connection is still correct then, so a
+/// failure only logs.
+fn with_nodelay(stream: TcpStream) -> TcpStream {
+	if let Err(e) = stream.set_nodelay(true) {
+		warn!("Failed to set TCP_NODELAY on a gRPC connection: {e}");
+	}
+	stream
 }
 
 fn register_signal(runtime: &tokio::runtime::Runtime, kind: SignalKind) -> Signal {
@@ -1237,8 +1253,41 @@ mod tests {
 	use std::fs;
 
 	use ldk_server_grpc::events::channel_state_change_reason::Details;
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 	use super::*;
+
+	#[tokio::test]
+	async fn an_accepted_grpc_connection_has_nodelay() {
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+
+		let (accepted, client) =
+			tokio::join!(accept_grpc_connection(&listener), TcpStream::connect(address));
+
+		client.unwrap();
+		assert!(accepted.unwrap().nodelay().unwrap());
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn a_connection_without_nodelay_is_kept() {
+		// A Unix socket refuses TCP options.
+		let (socket, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+		socket.set_nonblocking(true).unwrap();
+		peer.set_nonblocking(true).unwrap();
+		let socket = std::net::TcpStream::from(std::os::fd::OwnedFd::from(socket));
+		let stream = TcpStream::from_std(socket).unwrap();
+		assert!(stream.set_nodelay(true).is_err());
+
+		let mut stream = with_nodelay(stream);
+
+		let mut peer = tokio::net::UnixStream::from_std(peer).unwrap();
+		stream.write_all(b"open").await.unwrap();
+		let mut received = [0; 4];
+		peer.read_exact(&mut received).await.unwrap();
+		assert_eq!(&received, b"open");
+	}
 
 	#[test]
 	fn postgres_storage_rejects_existing_sqlite_state() {
