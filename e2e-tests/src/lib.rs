@@ -1037,6 +1037,79 @@ pub async fn wait_for_onchain_balance(client: &LdkServerClient, timeout: Duratio
 	}
 }
 
+/// A counterparty that accepts splices, stopped on drop.
+///
+/// The LDK Node of the server refuses each splice that its counterparty starts. Thus two servers
+/// cannot complete a splice. The LDK Node of this crate accepts inbound splices.
+pub struct SplicePeer {
+	node: ldk_node::Node,
+	p2p_port: u16,
+	_storage_dir: tempfile::TempDir,
+}
+
+impl SplicePeer {
+	/// Start a peer that keeps no on-chain reserve for channels with `server`.
+	pub fn start(bitcoind: &TestBitcoind, server: &LdkServerHandle) -> Self {
+		let storage_dir = tempfile::tempdir().unwrap();
+		let p2p_port = find_available_port();
+		let mut config = ldk_node::config::Config {
+			network: ldk_node::bitcoin::Network::Regtest,
+			storage_dir_path: storage_dir.path().to_str().unwrap().to_string(),
+			listening_addresses: Some(vec![format!("127.0.0.1:{p2p_port}").parse().unwrap()]),
+			..Default::default()
+		};
+		let server_id = server.node_id().parse().unwrap();
+		config.anchor_channels_config.trusted_peers_no_reserve.push(server_id);
+
+		let mut builder = ldk_node::Builder::from_config(config);
+		let (host, port, user, password) = bitcoind.rpc_details();
+		builder.set_chain_source_bitcoind_rpc(host, port, user, password, None);
+		let mnemonic = Mnemonic::generate(WordCount::Words24).unwrap();
+		let entropy = ldk_node::entropy::NodeEntropy::from_bip39_mnemonic(mnemonic, None);
+		let node = builder.build(entropy).unwrap();
+		node.start().unwrap();
+		Self { node, p2p_port, _storage_dir: storage_dir }
+	}
+
+	pub fn node_id(&self) -> String {
+		self.node.node_id().to_string()
+	}
+
+	/// Open an unannounced channel from `server` and wait until it is usable. Return the
+	/// `user_channel_id` of the server.
+	pub async fn accept_channel(
+		&self, bitcoind: &TestBitcoind, server: &LdkServerHandle, channel_amount_sats: u64,
+	) -> String {
+		let address =
+			server.client().onchain_receive(OnchainReceiveRequest {}).await.unwrap().address;
+		bitcoind.fund_address(&address, 1.0);
+		mine_and_sync(bitcoind, &[server], 6).await;
+		wait_for_onchain_balance(server.client(), Duration::from_secs(30)).await;
+
+		let open = server
+			.client()
+			.open_channel(OpenChannelRequest {
+				node_pubkey: self.node_id(),
+				address: format!("127.0.0.1:{}", self.p2p_port),
+				amount: Some(open_channel_request::Amount::ChannelAmountSats(channel_amount_sats)),
+				push_to_counterparty_msat: None,
+				channel_config: None,
+				announce_channel: false,
+				disable_counterparty_reserve: false,
+			})
+			.await
+			.unwrap();
+		wait_for_usable_channel(server.client(), bitcoind, Duration::from_secs(60)).await;
+		open.user_channel_id
+	}
+}
+
+impl Drop for SplicePeer {
+	fn drop(&mut self) {
+		let _ = self.node.stop();
+	}
+}
+
 /// Fund both servers' on-chain wallets, open a channel from A to B,
 /// mine to confirm, and wait until it's usable.
 pub async fn setup_funded_channel(

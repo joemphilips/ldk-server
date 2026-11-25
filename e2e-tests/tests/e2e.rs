@@ -17,8 +17,8 @@ use e2e_tests::{
 	payment_for_tx, run_cli, run_cli_output, run_cli_raw, run_cli_with_config, send_bolt11_payment,
 	setup_funded_channel, splice_txid, wait_for_channels, wait_for_event, wait_for_gossip,
 	wait_for_onchain_balance, wait_for_settled_balance, wait_for_transaction,
-	wait_for_usable_channel, wait_for_wallet_sync, LdkServerConfig, LdkServerHandle, TestBitcoind,
-	TestConfigBuilder,
+	wait_for_usable_channel, wait_for_wallet_sync, LdkServerConfig, LdkServerHandle, SplicePeer,
+	TestBitcoind, TestConfigBuilder,
 };
 use hex_conservative::{DisplayHex, FromHex};
 use ldk_node::bitcoin::hashes::{sha256, Hash};
@@ -33,9 +33,9 @@ use ldk_server_client::ldk_server_grpc::api::{
 	Bolt11ReceiveRequest, Bolt11SendProbesRequest, Bolt11SendRequest, Bolt12ReceiveRequest,
 	BumpChannelFundingFeeRequest, GetChannelForwardingStatsRequest,
 	GetForwardedPaymentDetailsRequest, GetPaymentDetailsRequest, ListChannelForwardingStatsRequest,
-	ListChannelPairForwardingStatsRequest, ListChannelsRequest, ListForwardedPaymentsRequest,
-	OnchainBumpFeeRequest, OnchainReceiveRequest, OnchainSendRequest, OpenChannelRequest,
-	SpontaneousSendProbesRequest,
+	ListChannelPairForwardingStatsRequest, ListChannelsRequest, ListChannelsResponse,
+	ListForwardedPaymentsRequest, OnchainBumpFeeRequest, OnchainReceiveRequest, OnchainSendRequest,
+	OpenChannelRequest, SpontaneousSendProbesRequest,
 };
 use ldk_server_client::ldk_server_grpc::events::event_envelope::Event;
 use ldk_server_client::ldk_server_grpc::events::{
@@ -1630,34 +1630,52 @@ async fn test_cli_force_close_channel() {
 async fn splice_in_via_cli(splice_amount: &str) {
 	let bitcoind = TestBitcoind::new();
 	let server_a = LdkServerHandle::start(&bitcoind).await;
-	let server_b = LdkServerHandle::start(&bitcoind).await;
-	let user_channel_id = setup_funded_channel(&bitcoind, &server_a, &server_b, 100_000).await;
+	let peer = SplicePeer::start(&bitcoind, &server_a);
+	let user_channel_id = peer.accept_channel(&bitcoind, &server_a, 100_000).await;
 
 	let mut events_a = server_a.client().subscribe_events().await.unwrap();
 
 	let output =
-		run_cli(&server_a, &["splice-in", &user_channel_id, server_b.node_id(), splice_amount]);
+		run_cli(&server_a, &["splice-in", &user_channel_id, &peer.node_id(), splice_amount]);
 	assert!(output.is_object());
 
 	let event_a = wait_for_event(&mut events_a, |e| matches!(e, Event::SpliceNegotiated(_))).await;
 	match &event_a.event {
 		Some(Event::SpliceNegotiated(splice_negotiated)) => {
 			assert_eq!(splice_negotiated.user_channel_id, user_channel_id);
-			assert_eq!(splice_negotiated.counterparty_node_id, server_b.node_id());
+			assert_eq!(splice_negotiated.counterparty_node_id, peer.node_id());
 			assert!(!splice_negotiated.new_funding_txo.is_empty());
 		},
 		other => panic!("expected SpliceNegotiated event, got {other:?}"),
 	}
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_cli_splice_in() {
 	splice_in_via_cli("50000sat").await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_cli_splice_in_with_all() {
 	splice_in_via_cli("all").await;
+}
+
+#[tokio::test]
+async fn test_inbound_splice_is_refused() {
+	let bitcoind = TestBitcoind::new();
+	let server_a = LdkServerHandle::start(&bitcoind).await;
+	let server_b = LdkServerHandle::start(&bitcoind).await;
+	let user_channel_id = setup_funded_channel(&bitcoind, &server_a, &server_b, 100_000).await;
+	let funding = |channels: ListChannelsResponse| channels.channels[0].funding_txo.clone();
+	let before = server_b.client().list_channels(ListChannelsRequest {}).await.unwrap();
+	let mut events_a = server_a.client().subscribe_events().await.unwrap();
+
+	run_cli(&server_a, &["splice-in", &user_channel_id, server_b.node_id(), "50000sat"]);
+	wait_for_event(&mut events_a, |e| matches!(e, Event::SpliceNegotiationFailed(_))).await;
+
+	let after = server_b.client().list_channels(ListChannelsRequest {}).await.unwrap();
+	assert_eq!(after.channels.len(), 1);
+	assert_eq!(funding(after), funding(before));
 }
 
 #[tokio::test]
@@ -1673,15 +1691,15 @@ async fn test_cli_splice_out() {
 	assert!(address.starts_with("bcrt1"), "Expected regtest address, got: {}", address);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_pending_splice_fee_bump_client_cli() {
 	let bitcoind = TestBitcoind::new();
 	let server = LdkServerHandle::start(&bitcoind).await;
-	let peer = LdkServerHandle::start(&bitcoind).await;
-	let channel = setup_funded_channel(&bitcoind, &server, &peer, 100_000).await;
+	let peer = SplicePeer::start(&bitcoind, &server);
+	let channel = peer.accept_channel(&bitcoind, &server, 100_000).await;
 	let request = BumpChannelFundingFeeRequest {
 		user_channel_id: channel.clone(),
-		counterparty_node_id: peer.node_id().into(),
+		counterparty_node_id: peer.node_id(),
 	};
 	let error = server.client().bump_channel_funding_fee(request.clone()).await.unwrap_err();
 	assert_eq!(error.error_code, LightningError);
@@ -1694,7 +1712,7 @@ async fn test_pending_splice_fee_bump_client_cli() {
 
 	let mut events = server.client().subscribe_events().await.unwrap();
 	// Use the same funded channel and splice-in operation as the existing splice fixtures.
-	run_cli(&server, &["splice-in", &channel, peer.node_id(), "50000sat"]);
+	run_cli(&server, &["splice-in", &channel, &peer.node_id(), "50000sat"]);
 	let original = splice_txid(&mut events).await;
 	let original_tx = wait_for_transaction(&bitcoind, &original).await;
 	let funding_output = original_tx["vout"]
@@ -1724,7 +1742,7 @@ async fn test_pending_splice_fee_bump_client_cli() {
 	let replacement = splice_txid(&mut events).await;
 	assert_ne!(original, replacement);
 	wait_for_transaction(&bitcoind, &replacement).await;
-	let cli = run_cli(&server, &["bump-channel-funding-fee", &channel, peer.node_id()]);
+	let cli = run_cli(&server, &["bump-channel-funding-fee", &channel, &peer.node_id()]);
 	assert_eq!(cli, json!({}));
 	let cli_txid = splice_txid(&mut events).await;
 	assert_ne!(replacement, cli_txid);
@@ -1740,7 +1758,7 @@ async fn test_pending_splice_fee_bump_client_cli() {
 	for old in [&original, &replacement] {
 		assert!(!mempool.contains(old));
 	}
-	mine_and_sync(&bitcoind, &[&server, &peer], 6).await;
+	mine_and_sync(&bitcoind, &[&server], 6).await;
 	tokio::time::timeout(Duration::from_secs(30), async {
 		loop {
 			let channels = server.client().list_channels(ListChannelsRequest {}).await.unwrap();

@@ -13,7 +13,7 @@ use std::time::Duration;
 use e2e_tests::{
 	assert_replacement, mine_and_sync, payment_for_tx, setup_funded_channel, splice_txid,
 	wait_for_event, wait_for_onchain_balance, wait_for_transaction, wait_for_wallet_sync,
-	LdkServerHandle, McpHandle, TestBitcoind,
+	LdkServerHandle, McpHandle, SplicePeer, TestBitcoind,
 };
 use ldk_node::bitcoin::Amount;
 use ldk_node::lightning::offers::refund::Refund;
@@ -307,18 +307,18 @@ async fn test_mcp_onchain_fee_bump() {
 	}
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_mcp_pending_splice_fee_bump() {
 	let bitcoind = TestBitcoind::new();
 	let server = LdkServerHandle::start(&bitcoind).await;
-	let peer = LdkServerHandle::start(&bitcoind).await;
-	let channel = setup_funded_channel(&bitcoind, &server, &peer, 100_000).await;
+	let peer = SplicePeer::start(&bitcoind, &server);
+	let channel = peer.accept_channel(&bitcoind, &server, 100_000).await;
 	let mut events = server.client().subscribe_events().await.unwrap();
 	server
 		.client()
 		.splice_in(SpliceInRequest {
 			user_channel_id: channel.clone(),
-			counterparty_node_id: peer.node_id().into(),
+			counterparty_node_id: peer.node_id(),
 			amount: Some(splice_in_request::Amount::SpliceAmountSats(50_000)),
 		})
 		.await
