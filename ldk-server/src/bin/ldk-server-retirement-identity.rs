@@ -248,6 +248,15 @@ mod peer_seed {
 		fn create(
 			&self, entropy: impl FnOnce(&mut [u8; 32]) -> Result<(), ()>,
 		) -> Result<String, ()> {
+			self.validate()?;
+			// A missing seed beside an old manager is not a fresh peer. Examine
+			// at most one entry through the held directory descriptor. Even an
+			// unreadable entry refuses; no name or file content leaves this mode.
+			let mut entries = fs::read_dir(relative(&self.file, ".")).map_err(|_| ())?;
+			if entries.next().is_some() {
+				return Err(());
+			}
+			self.validate()?;
 			for name in [INTENT, SEED, COMPLETE] {
 				self.absent(name)?;
 			}
@@ -403,6 +412,22 @@ mod peer_seed {
 			assert!(fixture.dir.observe().is_err());
 			assert!(fixture.dir.create(|_| panic!("must not generate")).is_err());
 			assert!(!fixture.path.join(INTENT).exists());
+		}
+
+		#[test]
+		fn existing_manager_or_unrelated_entry_never_generates_a_seed() {
+			for name in ["manager", "other-state", "nested"] {
+				let fixture = Fixture::new();
+				if name == "nested" {
+					fs::create_dir(fixture.path.join(name)).unwrap();
+				} else {
+					fixture.dir.write_once(name, b"retained-node-state").unwrap();
+				}
+				assert!(fixture.dir.create(|_| panic!("must not generate")).is_err());
+				assert!(!fixture.path.join(INTENT).exists());
+				assert!(!fixture.path.join(SEED).exists());
+				assert!(fixture.path.join(name).exists());
+			}
 		}
 
 		#[test]
