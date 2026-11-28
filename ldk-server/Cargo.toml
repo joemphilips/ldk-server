@@ -1,5 +1,6 @@
 [package]
 name = "ldk-server"
+default-run = "ldk-server"
 version = "0.1.0"
 authors = ["benthecarman <benthecarman@live.com>", "Elias Rohrer <dev@tnull.de>"]
 homepage = "https://lightningdevkit.org/"
@@ -13,7 +14,7 @@ keywords = ["bitcoin", "lightning", "ldk", "server"]
 categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
-ldk-node = { git = "https://github.com/joemphilips/ldk-node", rev = "5f91c1304cd060d22821eae4c549e8e12ef974ec", features = ["storage-postgres"] }
+ldk-node = { git = "https://github.com/joemphilips/ldk-node", rev = "044b7557bc54bd264e7ef4f757a961fade135362", features = ["storage-postgres"] }
 serde = { version = "1.0.203", default-features = false, features = ["derive"] }
 hyper = { version = "1", default-features = false, features = ["server", "http2"] }
 http-body-util = { version = "0.1", default-features = false }
