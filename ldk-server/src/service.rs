@@ -7,6 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use crate::api::bounded_drain::{handle_bounded_drain, handle_get_drain_inventory};
+use ldk_server_grpc::endpoints::{BOUNDED_DRAIN_PATH, GET_DRAIN_INVENTORY_PATH};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -244,6 +246,12 @@ impl Service<Request<Incoming>> for NodeService {
 			};
 
 			match method.as_str() {
+				GET_DRAIN_INVENTORY_PATH => {
+					handle_grpc_unary(context, body_bytes, handle_get_drain_inventory).await
+				},
+				BOUNDED_DRAIN_PATH => {
+					handle_grpc_unary(context, body_bytes, handle_bounded_drain).await
+				},
 				GET_NODE_INFO_PATH => {
 					handle_grpc_unary(context, body_bytes, handle_get_node_info_request).await
 				},
@@ -642,7 +650,18 @@ where
 		_ => {},
 	}
 	let content_length = request_content_length(headers)?;
-	let limited_body = Limited::new(body, MAX_BODY_SIZE);
+	let body_limit = if matches!(method, GET_DRAIN_INVENTORY_PATH | BOUNDED_DRAIN_PATH) {
+		1024
+	} else {
+		MAX_BODY_SIZE
+	};
+	if content_length.is_some_and(|len| len > body_limit as u64) {
+		return Err(GrpcStatus::new(
+			GRPC_STATUS_INVALID_ARGUMENT,
+			"Request body too large or failed to read",
+		));
+	}
+	let limited_body = Limited::new(body, body_limit);
 	let bytes = match limited_body.collect().await {
 		Ok(collected) => collected.to_bytes(),
 		Err(_) => {
@@ -931,5 +950,46 @@ mod tests {
 		let err = validate_request_body_len(Some(6), 5).unwrap_err();
 		assert_eq!(err.code, GRPC_STATUS_INVALID_ARGUMENT);
 		assert_eq!(err.message, "Request body length does not match content-length");
+	}
+	#[tokio::test]
+	async fn bounded_drain_admin_and_body_limits_precede_decoding() {
+		let (_directory, store) = test_store("bounded-drain-admission");
+		let token = admin_token(&store);
+		let admin = store.authenticate(CREATE_MACAROON_PATH, Some(&token)).unwrap();
+		let sender = store
+			.create_root("sender", vec!["onchain:send".into(), "node:read".into()], &admin)
+			.unwrap();
+		let timestamp =
+			std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+		for method in [GET_DRAIN_INVENTORY_PATH, BOUNDED_DRAIN_PATH] {
+			let mut headers = HeaderMap::new();
+			headers.insert(
+				"macaroon",
+				bind_request(&sender.token, method, b"", timestamp).parse().unwrap(),
+			);
+			assert_eq!(
+				read_authorized_request(&store, method, &headers, UnreadBody)
+					.await
+					.unwrap_err()
+					.code,
+				GRPC_STATUS_PERMISSION_DENIED
+			);
+			headers
+				.insert("macaroon", bind_request(&token, method, b"", timestamp).parse().unwrap());
+			headers.insert("content-length", "1025".parse().unwrap());
+			assert_eq!(
+				read_authorized_request(&store, method, &headers, UnreadBody)
+					.await
+					.unwrap_err()
+					.code,
+				GRPC_STATUS_INVALID_ARGUMENT
+			);
+			headers.remove("content-length");
+			let body = http_body_util::Full::new(bytes::Bytes::from(vec![0; 1025]));
+			assert_eq!(
+				read_authorized_request(&store, method, &headers, body).await.unwrap_err().code,
+				GRPC_STATUS_INVALID_ARGUMENT
+			);
+		}
 	}
 }

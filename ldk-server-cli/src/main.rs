@@ -7,6 +7,9 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use ldk_server_client::ldk_server_grpc::api::{
+	BoundedDrainRequest, BoundedDrainResponse, GetDrainInventoryRequest, GetDrainInventoryResponse,
+};
 use std::fmt::Write;
 use std::path::PathBuf;
 
@@ -146,6 +149,22 @@ enum Commands {
 			help = "Fee rate in satoshis per virtual byte. If not set, a reasonable estimate will be used"
 		)]
 		fee_rate_sat_per_vb: Option<u64>,
+	},
+	#[command(about = "Read complete drain inventory of an externally fenced node (admin only)")]
+	GetDrainInventory { expected_node_id: String },
+	#[command(
+		about = "One bounded drain dispatch (admin only). Journal first; never retry an unknown reply"
+	)]
+	BoundedDrain {
+		expected_node_id: String,
+		expected_commitment: String,
+		destination: String,
+		#[arg(long)]
+		fee_rate_sat_per_vb: u64,
+		#[arg(long)]
+		max_fee_rate_sat_per_vb: u64,
+		#[arg(long)]
+		max_total_fee_sat: u64,
 	},
 	#[command(about = "Replace an unconfirmed outbound on-chain payment using RBF")]
 	OnchainBumpFee {
@@ -957,6 +976,37 @@ async fn main() {
 		Commands::OnchainReceive => {
 			handle_response_result::<_, OnchainReceiveResponse>(
 				client.onchain_receive(OnchainReceiveRequest {}).await,
+			);
+		},
+		Commands::GetDrainInventory { expected_node_id } => {
+			handle_response_result::<_, GetDrainInventoryResponse>(
+				client.get_drain_inventory(GetDrainInventoryRequest { expected_node_id }).await,
+			);
+		},
+		Commands::BoundedDrain {
+			expected_node_id,
+			expected_commitment,
+			destination,
+			fee_rate_sat_per_vb,
+			max_fee_rate_sat_per_vb,
+			max_total_fee_sat,
+		} => {
+			if expected_commitment.len() != 64 {
+				handle_error_msg("Expected exactly 32 commitment bytes in hex".into());
+			}
+			let commitment = Vec::<u8>::from_hex(&expected_commitment)
+				.unwrap_or_else(|_| handle_error_msg("Invalid commitment hex".into()));
+			handle_response_result::<_, BoundedDrainResponse>(
+				client
+					.bounded_drain(BoundedDrainRequest {
+						expected_node_id,
+						expected_commitment: commitment.into(),
+						destination,
+						fee_rate_sat_per_vb,
+						max_fee_rate_sat_per_vb,
+						max_total_fee_sat,
+					})
+					.await,
 			);
 		},
 		Commands::OnchainBumpFee { payment_id, fee_rate_sat_per_vb } => {
@@ -2057,5 +2107,38 @@ mod tests {
 	fn parse_custom_tlv_rejects_invalid_hex() {
 		let err = parse_custom_tlv("65537:not-hex").unwrap_err();
 		assert!(err.contains("invalid hex value"));
+	}
+	#[test]
+	fn bounded_drain_requires_every_explicit_limit() {
+		let node = "02".to_owned() + &"11".repeat(32);
+		let hash = "22".repeat(32);
+		let base =
+			["ldk-server-cli", "bounded-drain", node.as_str(), hash.as_str(), "bcrt1-destination"];
+		assert!(Cli::try_parse_from(base).is_err());
+		let mut args = base.to_vec();
+		args.extend([
+			"--fee-rate-sat-per-vb",
+			"1",
+			"--max-fee-rate-sat-per-vb",
+			"10",
+			"--max-total-fee-sat",
+			"10000",
+		]);
+		let cli = Cli::try_parse_from(args).unwrap();
+		assert!(matches!(
+			cli.command,
+			Commands::BoundedDrain {
+				fee_rate_sat_per_vb: 1,
+				max_fee_rate_sat_per_vb: 10,
+				max_total_fee_sat: 10000,
+				..
+			}
+		));
+		assert!(matches!(
+			Cli::try_parse_from(["ldk-server-cli", "get-drain-inventory", node.as_str()])
+				.unwrap()
+				.command,
+			Commands::GetDrainInventory { .. }
+		));
 	}
 }

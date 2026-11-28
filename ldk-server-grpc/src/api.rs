@@ -165,6 +165,81 @@ pub struct OnchainSendResponse {
 	#[prost(string, tag = "1")]
 	pub txid: ::prost::alloc::string::String,
 }
+/// Admin-only inventory for an externally fenced node. Complete or refused; never truncated.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetDrainInventoryRequest {
+	#[prost(string, tag = "1")]
+	pub expected_node_id: ::prost::alloc::string::String,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DrainInput {
+	#[prost(string, tag = "1")]
+	pub txid: ::prost::alloc::string::String,
+	#[prost(uint32, tag = "2")]
+	pub vout: u32,
+	#[prost(uint64, tag = "3")]
+	pub value_sat: u64,
+	#[prost(bytes = "bytes", tag = "4")]
+	pub script_pubkey: ::prost::bytes::Bytes,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetDrainInventoryResponse {
+	#[prost(string, tag = "1")]
+	pub node_id: ::prost::alloc::string::String,
+	#[prost(bytes = "bytes", tag = "2")]
+	pub commitment: ::prost::bytes::Bytes,
+	#[prost(message, repeated, tag = "3")]
+	pub inputs: ::prost::alloc::vec::Vec<DrainInput>,
+	#[prost(uint64, tag = "4")]
+	pub total_sat: u64,
+}
+/// Admin-only, one journaled dispatch. The coordinator must fence channel/peer admission.
+/// Wallet checks and signing are serialized; this RPC does not freeze ChannelManager.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BoundedDrainRequest {
+	#[prost(string, tag = "1")]
+	pub expected_node_id: ::prost::alloc::string::String,
+	#[prost(bytes = "bytes", tag = "2")]
+	pub expected_commitment: ::prost::bytes::Bytes,
+	#[prost(string, tag = "3")]
+	pub destination: ::prost::alloc::string::String,
+	#[prost(uint64, tag = "4")]
+	pub fee_rate_sat_per_vb: u64,
+	#[prost(uint64, tag = "5")]
+	pub max_fee_rate_sat_per_vb: u64,
+	#[prost(uint64, tag = "6")]
+	pub max_total_fee_sat: u64,
+}
+/// Enqueued locally, not proof of broadcast or confirmation. Never retry an unknown reply.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BoundedDrainResponse {
+	#[prost(string, tag = "1")]
+	pub txid: ::prost::alloc::string::String,
+	#[prost(uint64, tag = "2")]
+	pub fee_sat: u64,
+	#[prost(uint64, tag = "3")]
+	pub output_sat: u64,
+}
 /// Replace an unconfirmed outbound on-chain payment with a higher-fee transaction.
 /// Channel funding payments (including splices) are not eligible.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

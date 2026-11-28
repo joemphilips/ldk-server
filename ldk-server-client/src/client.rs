@@ -7,6 +7,10 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use ldk_server_grpc::api::{
+	BoundedDrainRequest, BoundedDrainResponse, GetDrainInventoryRequest, GetDrainInventoryResponse,
+};
+use ldk_server_grpc::endpoints::{BOUNDED_DRAIN_PATH, GET_DRAIN_INVENTORY_PATH};
 use std::future::poll_fn;
 use std::pin::Pin;
 
@@ -198,6 +202,20 @@ impl LdkServerClient {
 		&self, request: OnchainSendRequest,
 	) -> Result<OnchainSendResponse, LdkServerError> {
 		self.grpc_unary(&request, ONCHAIN_SEND_PATH).await
+	}
+
+	/// Complete wallet inventory for an externally fenced node. Requires admin permission.
+	pub async fn get_drain_inventory(
+		&self, request: GetDrainInventoryRequest,
+	) -> Result<GetDrainInventoryResponse, LdkServerError> {
+		self.grpc_unary(&request, GET_DRAIN_INVENTORY_PATH).await
+	}
+
+	/// One journaled drain dispatch. Unknown replies require reconciliation, never blind retry.
+	pub async fn bounded_drain(
+		&self, request: BoundedDrainRequest,
+	) -> Result<BoundedDrainResponse, LdkServerError> {
+		self.grpc_unary(&request, BOUNDED_DRAIN_PATH).await
 	}
 
 	/// Replace an unconfirmed outbound on-chain payment using RBF.

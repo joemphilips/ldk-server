@@ -129,6 +129,37 @@ message OnchainSendResponse {
   string txid = 1;
 }
 
+// Admin-only inventory for an externally fenced node. Complete or refused; never truncated.
+message GetDrainInventoryRequest { string expected_node_id = 1; }
+message DrainInput {
+  string txid = 1;
+  uint32 vout = 2;
+  uint64 value_sat = 3;
+  bytes script_pubkey = 4;
+}
+message GetDrainInventoryResponse {
+  string node_id = 1;
+  bytes commitment = 2;
+  repeated DrainInput inputs = 3;
+  uint64 total_sat = 4;
+}
+// Admin-only, one journaled dispatch. The coordinator must fence channel/peer admission.
+// Wallet checks and signing are serialized; this RPC does not freeze ChannelManager.
+message BoundedDrainRequest {
+  string expected_node_id = 1;
+  bytes expected_commitment = 2;
+  string destination = 3;
+  uint64 fee_rate_sat_per_vb = 4;
+  uint64 max_fee_rate_sat_per_vb = 5;
+  uint64 max_total_fee_sat = 6;
+}
+// Enqueued locally, not proof of broadcast or confirmation. Never retry an unknown reply.
+message BoundedDrainResponse {
+  string txid = 1;
+  uint64 fee_sat = 2;
+  uint64 output_sat = 3;
+}
+
 // Replace an unconfirmed outbound on-chain payment with a higher-fee transaction.
 // Channel funding payments (including splices) are not eligible.
 message OnchainBumpFeeRequest {
@@ -1282,6 +1313,8 @@ service LightningNode {
   rpc OnchainReceive(OnchainReceiveRequest) returns (OnchainReceiveResponse);
   // Send an on-chain payment to the given address.
   rpc OnchainSend(OnchainSendRequest) returns (OnchainSendResponse);
+  rpc GetDrainInventory(GetDrainInventoryRequest) returns (GetDrainInventoryResponse);
+  rpc BoundedDrain(BoundedDrainRequest) returns (BoundedDrainResponse);
   // Replace an unconfirmed outbound on-chain payment using RBF.
   rpc OnchainBumpFee(OnchainBumpFeeRequest) returns (OnchainBumpFeeResponse);
   // Return a BOLT11 payable invoice.

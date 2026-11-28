@@ -48,6 +48,8 @@ mod tests {
 			("GetBalances", Some("node:read")),
 			("OnchainReceive", Some("onchain:receive")),
 			("OnchainSend", Some("onchain:send")),
+			("GetDrainInventory", Some("admin")),
+			("BoundedDrain", Some("admin")),
 			("OnchainBumpFee", Some("onchain:send")),
 			("Bolt11Receive", Some("invoices:create")),
 			("Bolt11ReceiveForHash", Some("invoices:create")),

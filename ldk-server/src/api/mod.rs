@@ -29,6 +29,7 @@ pub(crate) mod bolt12_create_payer_proof;
 pub(crate) mod bolt12_receive;
 pub(crate) mod bolt12_refund;
 pub(crate) mod bolt12_send;
+pub(crate) mod bounded_drain;
 pub(crate) mod close_channel;
 pub(crate) mod connect_peer;
 pub(crate) mod decode_invoice;
