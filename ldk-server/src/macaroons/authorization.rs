@@ -49,6 +49,8 @@ mod tests {
 			("OnchainReceive", Some("onchain:receive")),
 			("OnchainSend", Some("onchain:send")),
 			("GetDrainInventory", Some("admin")),
+			("RetirementPeerQuiescence", Some("admin")),
+			("GetRetirementPeerQuiescence", Some("admin")),
 			("BoundedDrain", Some("admin")),
 			("OnchainBumpFee", Some("onchain:send")),
 			("Bolt11Receive", Some("invoices:create")),

@@ -27,7 +27,10 @@ use crate::endpoints::{
 	SPLICE_OUT_PATH, SPONTANEOUS_SEND_PATH, SPONTANEOUS_SEND_PROBES_PATH, SUBSCRIBE_EVENTS_PATH,
 	UNIFIED_SEND_PATH, UPDATE_CHANNEL_CONFIG_PATH, VERIFY_SIGNATURE_PATH,
 };
-use crate::endpoints::{BOUNDED_DRAIN_PATH, GET_DRAIN_INVENTORY_PATH};
+use crate::endpoints::{
+	BOUNDED_DRAIN_PATH, GET_DRAIN_INVENTORY_PATH, GET_RETIREMENT_PEER_QUIESCENCE_PATH,
+	RETIREMENT_PEER_QUIESCENCE_PATH,
+};
 
 pub const ADMIN_PERMISSION: &str = "admin";
 pub const NODE_READ_PERMISSION: &str = "node:read";
@@ -164,9 +167,10 @@ pub enum MethodAuthorization {
 /// macaroon's permissions allow.
 pub fn method_authorization(method: &str) -> MethodAuthorization {
 	match method {
-		GET_DRAIN_INVENTORY_PATH | BOUNDED_DRAIN_PATH => {
-			MethodAuthorization::Permission(ADMIN_PERMISSION)
-		},
+		GET_DRAIN_INVENTORY_PATH
+		| BOUNDED_DRAIN_PATH
+		| RETIREMENT_PEER_QUIESCENCE_PATH
+		| GET_RETIREMENT_PEER_QUIESCENCE_PATH => MethodAuthorization::Permission(ADMIN_PERMISSION),
 		GET_NODE_INFO_PATH | GET_BALANCES_PATH | EXPORT_PATHFINDING_SCORES_PATH => {
 			MethodAuthorization::Permission(NODE_READ_PERMISSION)
 		},

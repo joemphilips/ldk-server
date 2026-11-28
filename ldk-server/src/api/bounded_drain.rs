@@ -5,7 +5,7 @@ use ldk_node::bitcoin::Address;
 use ldk_node::drain::{DrainError, DrainRequest};
 use ldk_server_grpc::api::{
 	BoundedDrainRequest, BoundedDrainResponse, DrainInput, GetDrainInventoryRequest,
-	GetDrainInventoryResponse,
+	GetDrainInventoryResponse, RetirementPeerQuiescenceRequest, RetirementPeerQuiescenceResponse,
 };
 use std::{str::FromStr, sync::Arc};
 
@@ -88,4 +88,39 @@ pub(crate) async fn handle_bounded_drain(
 		fee_sat: result.fee_sat,
 		output_sat: result.output_sat,
 	})
+}
+
+/// Closure happens in Node before this response is serialized; an unknown reply never reopens it.
+pub(crate) async fn handle_retirement_peer_quiescence(
+	context: Arc<Context>, request: RetirementPeerQuiescenceRequest,
+) -> Result<RetirementPeerQuiescenceResponse, LdkServerError> {
+	check_node(&context, &request.expected_node_id)?;
+	let status = context
+		.node
+		.close_retirement_peer_admission(context.node.node_id())
+		.map_err(|_| refused())?;
+	Ok(peer_response(request.expected_node_id, status))
+}
+
+fn peer_response(
+	node_id: String, status: ldk_node::PeerQuiescence,
+) -> RetirementPeerQuiescenceResponse {
+	RetirementPeerQuiescenceResponse {
+		node_id,
+		admission_closed: status.admission_closed,
+		active_operations: status.active_operations,
+		active_transports: status.active_transports,
+		disconnect_requested: status.disconnect_requested,
+		completion_lost: status.completion_lost,
+		quiescent: status.quiescent,
+	}
+}
+
+pub(crate) async fn handle_get_retirement_peer_quiescence(
+	context: Arc<Context>, request: RetirementPeerQuiescenceRequest,
+) -> Result<RetirementPeerQuiescenceResponse, LdkServerError> {
+	check_node(&context, &request.expected_node_id)?;
+	let status =
+		context.node.retirement_peer_quiescence(context.node.node_id()).map_err(|_| refused())?;
+	Ok(peer_response(request.expected_node_id, status))
 }

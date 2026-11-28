@@ -56,6 +56,7 @@ fn get_default_config_path() -> Option<PathBuf> {
 /// Configuration for LDK Server.
 #[derive(Debug)]
 pub struct Config {
+	pub retirement_peer_identity: Option<String>,
 	pub listening_addrs: Option<Vec<SocketAddress>>,
 	pub announcement_addrs: Option<Vec<SocketAddress>>,
 	pub alias: Option<NodeAlias>,
@@ -150,6 +151,7 @@ pub struct TorConfig {
 /// A builder for `Config`.
 #[derive(Default)]
 struct ConfigBuilder {
+	retirement_peer_identity: Option<String>,
 	listening_addresses: Option<Vec<String>>,
 	announcement_addresses: Option<Vec<String>>,
 	alias: Option<String>,
@@ -191,6 +193,8 @@ struct ConfigBuilder {
 impl ConfigBuilder {
 	fn merge_toml(&mut self, toml: TomlConfig) {
 		if let Some(node) = toml.node {
+			self.retirement_peer_identity =
+				node.retirement_peer_identity.or(self.retirement_peer_identity.clone());
 			self.network = node.network.or(self.network);
 			self.listening_addresses =
 				node.listening_addresses.or(self.listening_addresses.clone());
@@ -283,6 +287,9 @@ impl ConfigBuilder {
 	}
 
 	fn merge_args(&mut self, args: &ArgsConfig) {
+		if args.retirement_peer_identity.is_some() {
+			self.retirement_peer_identity = args.retirement_peer_identity.clone();
+		}
 		if let Some(network) = args.node_network {
 			self.network = Some(network);
 		}
@@ -736,7 +743,25 @@ impl ConfigBuilder {
 			None => HumanReadableNamesConfig::default(),
 		};
 
+		let retirement_peer_identity = self
+			.retirement_peer_identity
+			.map(|text| {
+				if network != Network::Signet
+					|| text.len() != 64
+					|| !text
+						.bytes()
+						.all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+				{
+					return Err(io::Error::new(
+						io::ErrorKind::InvalidInput,
+						"Retirement peer mode requires exact signet identity digest",
+					));
+				}
+				Ok(text)
+			})
+			.transpose()?;
 		Ok(Config {
+			retirement_peer_identity,
 			network,
 			listening_addrs,
 			announcement_addrs,
@@ -794,6 +819,7 @@ pub struct TomlConfig {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct NodeConfig {
+	retirement_peer_identity: Option<String>,
 	network: Option<Network>,
 	listening_addresses: Option<Vec<String>>,
 	announcement_addresses: Option<Vec<String>>,
@@ -1180,6 +1206,12 @@ impl TryFrom<&LSPSClientTomlConfig> for LSPSClientConfig {
 	override_usage = "ldk-server [config_path]"
 )]
 pub struct ArgsConfig {
+	#[arg(
+		long,
+		env = "LDK_SERVER_RETIREMENT_PEER_IDENTITY",
+		help = "Protected SHA256 of public-node-key ASCII; close admission before existing signet node start"
+	)]
+	retirement_peer_identity: Option<String>,
 	#[arg(required = false, help = "The configuration file for running LDK Server.")]
 	config_file: Option<String>,
 
@@ -1560,6 +1592,26 @@ mod tests {
 
 	use super::*;
 	use crate::util::config::{load_config, ArgsConfig};
+	#[test]
+	fn retirement_mode_requires_canonical_signet_identity() {
+		for (network, identity, valid) in [
+			("signet", "a".repeat(64), true),
+			("bitcoin", "a".repeat(64), false),
+			("signet", "A".repeat(64), false),
+			("signet", "a".repeat(63), false),
+			("signet", String::new(), false),
+		] {
+			let text = format!(
+				"[node]\nnetwork = \"{network}\"\nretirement_peer_identity = \"{identity}\"\n"
+			);
+			let config: TomlConfig = toml::from_str(&text).unwrap();
+			let mut builder = ConfigBuilder::default();
+			builder.merge_toml(config);
+			builder.esplora_url = Some("http://127.0.0.1:1".to_owned());
+			assert_eq!(builder.build().is_ok(), valid);
+		}
+	}
+
 	const DEFAULT_CONFIG: &str = r#"
 				[node]
 				network = "regtest"
@@ -1628,6 +1680,7 @@ mod tests {
 			bitcoind_rest_address: None,
 			rescan_from_height: None,
 			force_wallet_full_scan: false,
+			retirement_peer_identity: None,
 			storage_dir_path: Some(String::from("/tmp_cli")),
 			storage_postgres_connection_string: None,
 			storage_postgres_db_name: None,
@@ -1674,6 +1727,7 @@ mod tests {
 			bitcoind_rest_address: None,
 			rescan_from_height: None,
 			force_wallet_full_scan: false,
+			retirement_peer_identity: None,
 			storage_dir_path: None,
 			storage_postgres_connection_string: None,
 			storage_postgres_db_name: None,
@@ -1751,6 +1805,7 @@ mod tests {
 		let alias = "LDK Server";
 
 		let expected = Config {
+			retirement_peer_identity: None,
 			listening_addrs: Some(vec![SocketAddress::from_str("localhost:3001").unwrap()]),
 			announcement_addrs: Some(vec![SocketAddress::from_str("54.3.7.81:3001").unwrap()]),
 			alias: Some(parse_alias(alias).unwrap()),
@@ -2786,6 +2841,7 @@ mod tests {
 			parse_host_port(args_config.bitcoind_rpc_address.unwrap().as_str()).unwrap();
 
 		let expected = Config {
+			retirement_peer_identity: None,
 			listening_addrs: Some(vec![SocketAddress::from_str(
 				&args_config.node_listening_addresses.as_ref().unwrap()[0],
 			)
@@ -2901,6 +2957,7 @@ mod tests {
 
 		let config = load_config(&args_config).unwrap();
 		let expected = Config {
+			retirement_peer_identity: None,
 			listening_addrs: Some(vec![SocketAddress::from_str(
 				&args_config.node_listening_addresses.as_ref().unwrap()[0],
 			)

@@ -323,7 +323,20 @@ fn main() {
 	}
 	let build_node_until = |deadline: Instant| loop {
 		match build_node(&builder, node_entropy, &config_file.ldk_node_storage) {
-			Ok(node) => break node,
+			Ok(node) => {
+				if retirement_start_binding(
+					&node,
+					config_file.retirement_peer_identity.as_deref(),
+					creates_node,
+					uses_postgres,
+				)
+				.is_err()
+				{
+					error!("Retirement peer startup binding refused");
+					std::process::exit(-1);
+				}
+				break node;
+			},
 			Err(ldk_node::BuildError::KVStoreAlreadyInUse) if Instant::now() < deadline => {
 				warn!(
 					"LDK Node storage is in use by another node, retrying in {}s.",
@@ -338,6 +351,7 @@ fn main() {
 		}
 	};
 	let mut node = build_node_until(build_deadline);
+
 	if uses_postgres {
 		if let Err(e) = persist_postgres_storage_lock(&network_dir) {
 			error!("{e}");
@@ -1003,6 +1017,26 @@ fn persist_postgres_storage_lock(network_dir: &Path) -> Result<(), String> {
 	}
 }
 
+// Applied to every successful build, including a build after storage-lease retry or
+// first-start rebuilding. No Node.start or listener sees an unclosed retirement generation.
+fn retirement_start_binding(
+	node: &ldk_node::Node, expected: Option<&str>, creates_node: bool, uses_postgres: bool,
+) -> Result<(), ()> {
+	let Some(expected) = expected else {
+		return Ok(());
+	};
+	use ldk_node::bitcoin::hashes::{sha256, Hash};
+	let actual = sha256::Hash::hash(node.node_id().to_string().as_bytes()).to_string();
+	if creates_node || !uses_postgres || actual != expected {
+		return Err(());
+	}
+	// The native method enforces signet, the exact public identity, and monotonic closure.
+	if !node.close_retirement_peer_admission(node.node_id()).map_err(|_| ())?.quiescent {
+		return Err(());
+	}
+	Ok(())
+}
+
 fn build_node(
 	builder: &Builder, node_entropy: ldk_node::entropy::NodeEntropy,
 	ldk_node_storage: &LdkNodeStorageConfig,
@@ -1256,6 +1290,103 @@ mod tests {
 	use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 	use super::*;
+
+	#[test]
+	fn retirement_start_binding_closes_each_generation_and_refuses_wrong_modes() {
+		use ldk_node::bitcoin::{
+			hashes::{sha256, Hash},
+			Network,
+		};
+		for network in [Network::Signet, Network::Bitcoin] {
+			let dir = test_network_dir(if network == Network::Signet {
+				"retirement-signet"
+			} else {
+				"retirement-bitcoin"
+			});
+			let mut builder = Builder::new();
+			builder
+				.set_network(network)
+				.set_storage_dir_path(dir.to_string_lossy().into_owned())
+				.set_log_facade_logger();
+			for _ in 0..2 {
+				// Real repeated builds exercise fresh process-local gates; neither build starts
+				// a node, listener or external provider. The production build loop calls the
+				// same binding before returning any successfully built node.
+				let node = builder
+					.build_with_fs_store(ldk_node::entropy::NodeEntropy::from_seed_bytes([42; 64]))
+					.unwrap();
+				let digest = sha256::Hash::hash(node.node_id().to_string().as_bytes()).to_string();
+				assert!(retirement_start_binding(&node, Some(""), false, true).is_err());
+				assert!(
+					retirement_start_binding(&node, Some(&"0".repeat(64)), false, true).is_err()
+				);
+				assert!(retirement_start_binding(&node, Some(&digest), true, true).is_err());
+				assert!(retirement_start_binding(&node, Some(&digest), false, false).is_err());
+				if network == Network::Signet {
+					assert!(
+						!node.retirement_peer_quiescence(node.node_id()).unwrap().admission_closed
+					);
+					retirement_start_binding(&node, Some(&digest), false, true).unwrap();
+					assert!(node.retirement_peer_quiescence(node.node_id()).unwrap().quiescent);
+					assert!(node.onchain_payment().new_address().is_err());
+				} else {
+					assert!(retirement_start_binding(&node, Some(&digest), false, true).is_err());
+				}
+				drop(node);
+			}
+			fs::remove_dir_all(dir).unwrap();
+		}
+	}
+
+	#[test]
+	fn retirement_get_rpc_is_pure_and_close_rpc_is_identity_bound() {
+		use crate::api::bounded_drain::{
+			handle_get_retirement_peer_quiescence, handle_retirement_peer_quiescence,
+		};
+		use ldk_server_grpc::api::RetirementPeerQuiescenceRequest;
+		let dir = test_network_dir("retirement-rpc");
+		let mut builder = Builder::new();
+		builder
+			.set_network(Network::Signet)
+			.set_storage_dir_path(dir.to_string_lossy().into_owned())
+			.set_log_facade_logger();
+		let node = Arc::new(
+			builder
+				.build_with_fs_store(ldk_node::entropy::NodeEntropy::from_seed_bytes([42; 64]))
+				.unwrap(),
+		);
+		let context = Arc::new(service::Context { node: Arc::clone(&node) });
+		let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		runtime.block_on(async {
+			let request =
+				RetirementPeerQuiescenceRequest { expected_node_id: node.node_id().to_string() };
+			for _ in 0..2 {
+				let before =
+					handle_get_retirement_peer_quiescence(Arc::clone(&context), request.clone())
+						.await
+						.unwrap();
+				assert!(
+					!before.admission_closed && !before.disconnect_requested && !before.quiescent
+				);
+			}
+			let wrong = RetirementPeerQuiescenceRequest {
+				expected_node_id: "02".to_owned() + &"0".repeat(64),
+			};
+			assert!(handle_retirement_peer_quiescence(Arc::clone(&context), wrong).await.is_err());
+			assert!(!node.retirement_peer_quiescence(node.node_id()).unwrap().admission_closed);
+			let closed = handle_retirement_peer_quiescence(Arc::clone(&context), request.clone())
+				.await
+				.unwrap();
+			assert!(closed.admission_closed && closed.disconnect_requested && closed.quiescent);
+			let observed =
+				handle_get_retirement_peer_quiescence(Arc::clone(&context), request).await.unwrap();
+			assert_eq!(observed, closed);
+		});
+		drop(context);
+		drop(node);
+		drop(runtime);
+		fs::remove_dir_all(dir).unwrap();
+	}
 
 	#[tokio::test]
 	async fn an_accepted_grpc_connection_has_nodelay() {

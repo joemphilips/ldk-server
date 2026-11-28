@@ -143,6 +143,20 @@ message GetDrainInventoryResponse {
   repeated DrainInput inputs = 3;
   uint64 total_sat = 4;
 }
+// Admin-only, signet-only monotonic peer admission closure for this exact node.
+// Repeated calls observe the same barrier; they never reopen it. A pending/lost observer
+// result is not authority to retire a database or stop the chain watcher.
+message RetirementPeerQuiescenceRequest { string expected_node_id = 1; }
+message RetirementPeerQuiescenceResponse {
+  string node_id = 1;
+  bool admission_closed = 2;
+  uint64 active_operations = 3;
+  uint64 active_transports = 4;
+  bool disconnect_requested = 5;
+  bool completion_lost = 6;
+  bool quiescent = 7;
+}
+
 // Admin-only, one journaled dispatch. The coordinator must fence channel/peer admission.
 // Wallet checks and signing are serialized; this RPC does not freeze ChannelManager.
 message BoundedDrainRequest {
@@ -1314,6 +1328,8 @@ service LightningNode {
   // Send an on-chain payment to the given address.
   rpc OnchainSend(OnchainSendRequest) returns (OnchainSendResponse);
   rpc GetDrainInventory(GetDrainInventoryRequest) returns (GetDrainInventoryResponse);
+  rpc RetirementPeerQuiescence(RetirementPeerQuiescenceRequest) returns (RetirementPeerQuiescenceResponse);
+  rpc GetRetirementPeerQuiescence(RetirementPeerQuiescenceRequest) returns (RetirementPeerQuiescenceResponse);
   rpc BoundedDrain(BoundedDrainRequest) returns (BoundedDrainResponse);
   // Replace an unconfirmed outbound on-chain payment using RBF.
   rpc OnchainBumpFee(OnchainBumpFeeRequest) returns (OnchainBumpFeeResponse);

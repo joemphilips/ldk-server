@@ -205,6 +205,39 @@ pub struct GetDrainInventoryResponse {
 	#[prost(uint64, tag = "4")]
 	pub total_sat: u64,
 }
+/// Admin-only, signet-only monotonic peer admission closure for this exact node.
+/// Repeated calls observe the same barrier; they never reopen it. A pending/lost observer
+/// result is not authority to retire a database or stop the chain watcher.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RetirementPeerQuiescenceRequest {
+	#[prost(string, tag = "1")]
+	pub expected_node_id: ::prost::alloc::string::String,
+}
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RetirementPeerQuiescenceResponse {
+	#[prost(string, tag = "1")]
+	pub node_id: ::prost::alloc::string::String,
+	#[prost(bool, tag = "2")]
+	pub admission_closed: bool,
+	#[prost(uint64, tag = "3")]
+	pub active_operations: u64,
+	#[prost(uint64, tag = "4")]
+	pub active_transports: u64,
+	#[prost(bool, tag = "5")]
+	pub disconnect_requested: bool,
+	#[prost(bool, tag = "6")]
+	pub completion_lost: bool,
+	#[prost(bool, tag = "7")]
+	pub quiescent: bool,
+}
 /// Admin-only, one journaled dispatch. The coordinator must fence channel/peer admission.
 /// Wallet checks and signing are serialized; this RPC does not freeze ChannelManager.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

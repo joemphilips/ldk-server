@@ -9,8 +9,12 @@
 
 use ldk_server_grpc::api::{
 	BoundedDrainRequest, BoundedDrainResponse, GetDrainInventoryRequest, GetDrainInventoryResponse,
+	RetirementPeerQuiescenceRequest, RetirementPeerQuiescenceResponse,
 };
-use ldk_server_grpc::endpoints::{BOUNDED_DRAIN_PATH, GET_DRAIN_INVENTORY_PATH};
+use ldk_server_grpc::endpoints::{
+	BOUNDED_DRAIN_PATH, GET_DRAIN_INVENTORY_PATH, GET_RETIREMENT_PEER_QUIESCENCE_PATH,
+	RETIREMENT_PEER_QUIESCENCE_PATH,
+};
 use std::future::poll_fn;
 use std::pin::Pin;
 
@@ -209,6 +213,20 @@ impl LdkServerClient {
 		&self, request: GetDrainInventoryRequest,
 	) -> Result<GetDrainInventoryResponse, LdkServerError> {
 		self.grpc_unary(&request, GET_DRAIN_INVENTORY_PATH).await
+	}
+
+	/// Monotonic signet peer barrier. Pending/lost observers refuse retirement authority.
+	pub async fn retirement_peer_quiescence(
+		&self, request: RetirementPeerQuiescenceRequest,
+	) -> Result<RetirementPeerQuiescenceResponse, LdkServerError> {
+		self.grpc_unary(&request, RETIREMENT_PEER_QUIESCENCE_PATH).await
+	}
+
+	/// Read barrier state without initiating closure or disconnecting any peer.
+	pub async fn get_retirement_peer_quiescence(
+		&self, request: RetirementPeerQuiescenceRequest,
+	) -> Result<RetirementPeerQuiescenceResponse, LdkServerError> {
+		self.grpc_unary(&request, GET_RETIREMENT_PEER_QUIESCENCE_PATH).await
 	}
 
 	/// One journaled drain dispatch. Unknown replies require reconciliation, never blind retry.

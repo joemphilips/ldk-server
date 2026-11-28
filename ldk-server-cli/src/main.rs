@@ -9,6 +9,7 @@
 
 use ldk_server_client::ldk_server_grpc::api::{
 	BoundedDrainRequest, BoundedDrainResponse, GetDrainInventoryRequest, GetDrainInventoryResponse,
+	RetirementPeerQuiescenceRequest, RetirementPeerQuiescenceResponse,
 };
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -152,6 +153,14 @@ enum Commands {
 	},
 	#[command(about = "Read complete drain inventory of an externally fenced node (admin only)")]
 	GetDrainInventory { expected_node_id: String },
+	#[command(
+		about = "Monotonically close peer admission and observe transport completion (signet admin only)"
+	)]
+	RetirementPeerQuiescence { expected_node_id: String },
+	#[command(
+		about = "Read peer retirement barrier without initiating closure (signet admin only)"
+	)]
+	GetRetirementPeerQuiescence { expected_node_id: String },
 	#[command(
 		about = "One bounded drain dispatch (admin only). Journal first; never retry an unknown reply"
 	)]
@@ -983,6 +992,26 @@ async fn main() {
 				client.get_drain_inventory(GetDrainInventoryRequest { expected_node_id }).await,
 			);
 		},
+		Commands::RetirementPeerQuiescence { expected_node_id } => {
+			handle_response_result::<_, RetirementPeerQuiescenceResponse>(
+				client
+					.retirement_peer_quiescence(RetirementPeerQuiescenceRequest {
+						expected_node_id,
+					})
+					.await,
+			);
+		},
+
+		Commands::GetRetirementPeerQuiescence { expected_node_id } => {
+			handle_response_result::<_, RetirementPeerQuiescenceResponse>(
+				client
+					.get_retirement_peer_quiescence(RetirementPeerQuiescenceRequest {
+						expected_node_id,
+					})
+					.await,
+			);
+		},
+
 		Commands::BoundedDrain {
 			expected_node_id,
 			expected_commitment,
@@ -1961,6 +1990,22 @@ pub(crate) fn handle_error(e: LdkServerError) -> ! {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn retirement_read_and_close_commands_have_distinct_fixed_routes() {
+		let node = "02".to_owned() + &"1".repeat(64);
+		let read = Cli::try_parse_from(["ldk-server-cli", "get-retirement-peer-quiescence", &node])
+			.unwrap();
+		assert!(
+			matches!(read.command,Commands::GetRetirementPeerQuiescence { expected_node_id } if expected_node_id==node)
+		);
+		let close =
+			Cli::try_parse_from(["ldk-server-cli", "retirement-peer-quiescence", &node]).unwrap();
+		assert!(
+			matches!(close.command,Commands::RetirementPeerQuiescence { expected_node_id } if expected_node_id==node)
+		);
+		assert!(Cli::try_parse_from(["ldk-server-cli", "retirement-peer-quiescence"]).is_err());
+	}
 
 	#[test]
 	fn macaroon_presets_parse_and_appear_in_help() {

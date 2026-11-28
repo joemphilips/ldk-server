@@ -7,8 +7,14 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::api::bounded_drain::{handle_bounded_drain, handle_get_drain_inventory};
-use ldk_server_grpc::endpoints::{BOUNDED_DRAIN_PATH, GET_DRAIN_INVENTORY_PATH};
+use crate::api::bounded_drain::{
+	handle_bounded_drain, handle_get_drain_inventory, handle_get_retirement_peer_quiescence,
+	handle_retirement_peer_quiescence,
+};
+use ldk_server_grpc::endpoints::{
+	BOUNDED_DRAIN_PATH, GET_DRAIN_INVENTORY_PATH, GET_RETIREMENT_PEER_QUIESCENCE_PATH,
+	RETIREMENT_PEER_QUIESCENCE_PATH,
+};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -246,6 +252,13 @@ impl Service<Request<Incoming>> for NodeService {
 			};
 
 			match method.as_str() {
+				GET_RETIREMENT_PEER_QUIESCENCE_PATH => {
+					handle_grpc_unary(context, body_bytes, handle_get_retirement_peer_quiescence)
+						.await
+				},
+				RETIREMENT_PEER_QUIESCENCE_PATH => {
+					handle_grpc_unary(context, body_bytes, handle_retirement_peer_quiescence).await
+				},
 				GET_DRAIN_INVENTORY_PATH => {
 					handle_grpc_unary(context, body_bytes, handle_get_drain_inventory).await
 				},
@@ -650,7 +663,13 @@ where
 		_ => {},
 	}
 	let content_length = request_content_length(headers)?;
-	let body_limit = if matches!(method, GET_DRAIN_INVENTORY_PATH | BOUNDED_DRAIN_PATH) {
+	let body_limit = if matches!(
+		method,
+		GET_DRAIN_INVENTORY_PATH
+			| BOUNDED_DRAIN_PATH
+			| RETIREMENT_PEER_QUIESCENCE_PATH
+			| GET_RETIREMENT_PEER_QUIESCENCE_PATH
+	) {
 		1024
 	} else {
 		MAX_BODY_SIZE
@@ -961,7 +980,12 @@ mod tests {
 			.unwrap();
 		let timestamp =
 			std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-		for method in [GET_DRAIN_INVENTORY_PATH, BOUNDED_DRAIN_PATH] {
+		for method in [
+			GET_DRAIN_INVENTORY_PATH,
+			BOUNDED_DRAIN_PATH,
+			RETIREMENT_PEER_QUIESCENCE_PATH,
+			GET_RETIREMENT_PEER_QUIESCENCE_PATH,
+		] {
 			let mut headers = HeaderMap::new();
 			headers.insert(
 				"macaroon",
